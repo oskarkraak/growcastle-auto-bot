@@ -1,0 +1,101 @@
+import sys
+try:
+    import pyautogui
+except ImportError:
+    print("Error: pyautogui module not found. Install with 'pip install pyautogui'.")
+    sys.exit(1)
+
+import random
+import time
+
+# Coordinates
+archers = [(316, 577), (316, 738)]
+heroes = [(537, 546), (640, 546), (750, 546), (537, 431), (640, 431), (750, 431), (537, 302), (640, 302), (750, 302)]
+upgrades = [(1442, 218), (1440, 348)]
+battle_switch = (1755, 939)
+
+MENU_HEX = 0xBFB9AC
+BATTLE_HEX = 0x6E6256
+
+# Optional PyAutoGUI settings
+pyautogui.FAILSAFE = True  # Move mouse to a corner to abort
+pyautogui.PAUSE = 0.1      # Small pause after each PyAutoGUI call
+
+def with_offset(coord, max_offset=40):
+    """Apply a random offset to a coordinate."""
+    x, y = coord
+    return x + random.randint(-max_offset, max_offset), y + random.randint(-max_offset, max_offset)
+
+def hex_to_rgb(hex_value):
+    """
+    Convert a hex color (e.g., 0xBFB9AC or '#BFB9AC') to an (R, G, B) tuple.
+    """
+    # Handle string input like '#BFB9AC' or 'BFB9AC'
+    if isinstance(hex_value, str):
+        hex_value = hex_value.lstrip('#')
+        hex_value = int(hex_value, 16)
+    
+    # Extract RGB components
+    r = (hex_value >> 16) & 0xFF
+    g = (hex_value >> 8) & 0xFF
+    b = hex_value & 0xFF
+    return (r, g, b)
+
+def sleep_quick():
+    time.sleep(random.uniform(0.2, 0.5))
+
+def main():
+    n_wave = 0
+    while True:
+        pixel_color = pyautogui.pixel(1755, 939)
+        
+        if pixel_color == hex_to_rgb(BATTLE_HEX):
+            # Battle mode
+            target = random.choice(heroes + archers)
+            click_pos = with_offset(target)
+            pyautogui.click(*click_pos)
+            time.sleep(random.uniform(0, 3))
+        elif pixel_color == hex_to_rgb(MENU_HEX):
+            # Upgrade mode
+            target = random.choice(heroes + upgrades)
+            click_pos = with_offset(target)
+            
+            if target in heroes:
+                # Hero was chosen - additional hero-specific actions can go here
+                pyautogui.click(*click_pos)
+                sleep_quick()         
+                pyautogui.moveTo(*with_offset((1304, 660)))
+                pyautogui.mouseDown()
+                time.sleep(random.uniform(2, 3.5))
+                pyautogui.mouseUp()
+                sleep_quick()         
+                pyautogui.click(*with_offset((1488, 258)))
+                sleep_quick()         
+                pyautogui.click(*with_offset((1827, 144)))
+                sleep_quick()         
+            else:
+                # Upgrade was chosen - additional upgrade-specific actions can go here
+                pyautogui.moveTo(*click_pos)
+                sleep_quick()         
+                pyautogui.mouseDown()
+                time.sleep(random.uniform(2, 3.5))
+                pyautogui.mouseUp()
+                sleep_quick()         
+
+            # Switch back to battle mode
+            switch_pos = with_offset(battle_switch)
+            pyautogui.click(*switch_pos)
+
+            n_wave = n_wave + 1
+            print("Starting wave " + str(n_wave))
+
+            # Exponential distribution - higher numbers exponentially less likely
+            time.sleep(min(120, random.expovariate(0.5) + 4))
+        else:
+            time.sleep(0.4)
+        
+        # Small delay to avoid CPU overuse
+        time.sleep(0.1)
+
+if __name__ == "__main__":
+    main()
