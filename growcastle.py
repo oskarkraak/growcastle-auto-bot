@@ -1,4 +1,5 @@
 import sys
+import argparse
 try:
     import pyautogui
 except ImportError:
@@ -44,7 +45,7 @@ def hex_to_rgb(hex_value):
 def sleep_quick():
     time.sleep(random.uniform(0.2, 0.5))
 
-def main():
+def main(no_upgrades=False):
     n_wave = 0
     while True:
         pixel_color = pyautogui.pixel(1755, 939)
@@ -56,35 +57,41 @@ def main():
             pyautogui.click(*click_pos)
             time.sleep(random.uniform(0, 3))
         elif pixel_color == hex_to_rgb(MENU_HEX):
+            sleep_quick()
             # Upgrade mode
-            target = random.choice(heroes + upgrades)
-            click_pos = with_offset(target)
-            
-            if target in heroes:
-                # Hero was chosen - additional hero-specific actions can go here
-                pyautogui.click(*click_pos)
-                sleep_quick()         
-                pyautogui.moveTo(*with_offset((1304, 660)))
-                pyautogui.mouseDown()
-                time.sleep(random.uniform(2, 3.5))
-                pyautogui.mouseUp()
-                sleep_quick()         
-                pyautogui.click(*with_offset((1488, 258)))
-                sleep_quick()         
-                pyautogui.click(*with_offset((1827, 144)))
-                sleep_quick()         
+            if no_upgrades:
+                # Skip upgrades, just switch back to battle
+                switch_pos = with_offset(battle_switch)
+                pyautogui.click(*switch_pos)
             else:
-                # Upgrade was chosen - additional upgrade-specific actions can go here
-                pyautogui.moveTo(*click_pos)
-                sleep_quick()         
-                pyautogui.mouseDown()
-                time.sleep(random.uniform(2, 3.5))
-                pyautogui.mouseUp()
-                sleep_quick()         
+                target = random.choice(heroes + upgrades)
+                click_pos = with_offset(target)
+                
+                if target in heroes:
+                    # Hero was chosen - additional hero-specific actions can go here
+                    pyautogui.click(*click_pos)
+                    sleep_quick()         
+                    pyautogui.moveTo(*with_offset((1304, 660)))
+                    pyautogui.mouseDown()
+                    time.sleep(random.uniform(2, 3.5))
+                    pyautogui.mouseUp()
+                    sleep_quick()         
+                    pyautogui.click(*with_offset((1488, 258)))
+                    sleep_quick()         
+                    pyautogui.click(*with_offset((1827, 144)))
+                    sleep_quick()         
+                else:
+                    # Upgrade was chosen - additional upgrade-specific actions can go here
+                    pyautogui.moveTo(*click_pos)
+                    sleep_quick()         
+                    pyautogui.mouseDown()
+                    time.sleep(random.uniform(2, 3.5))
+                    pyautogui.mouseUp()
+                    sleep_quick()         
 
-            # Switch back to battle mode
-            switch_pos = with_offset(battle_switch)
-            pyautogui.click(*switch_pos)
+                # Switch back to battle mode
+                switch_pos = with_offset(battle_switch)
+                pyautogui.click(*switch_pos)
 
             n_wave = n_wave + 1
             print("Starting wave " + str(n_wave))
@@ -98,4 +105,9 @@ def main():
         time.sleep(0.1)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Grow Castle automation bot')
+    parser.add_argument('--no-upgrades', action='store_true', 
+                       help='Skip upgrade actions and only perform battle actions')
+    args = parser.parse_args()
+    
+    main(no_upgrades=args.no_upgrades)
