@@ -110,7 +110,7 @@ def main(no_upgrades=False):
                 pyautogui.click(*switch_pos)
 
             n_wave = n_wave + 1
-            print("Starting wave " + str(n_wave))
+            print("Wave " + str(n_wave) + " started")
 
             # Exponential distribution - higher numbers exponentially less likely
             time.sleep(min(120, random.expovariate(0.5) + 4))
