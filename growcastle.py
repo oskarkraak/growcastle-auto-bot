@@ -51,6 +51,7 @@ def is_boss_present():
 
 def main(no_upgrades=False):
     n_wave = 0
+    won = False
     while True:
         pixel_color = pyautogui.pixel(1755, 939)
         
@@ -65,6 +66,13 @@ def main(no_upgrades=False):
                 max_skill_sleep_time = 1
             time.sleep(random.uniform(0, max_skill_sleep_time))
         elif pixel_color == hex_to_rgb(MENU_HEX):
+            # Reset won
+            if won:
+                print("VICTORY")
+            else:
+                print("DEFEAT")
+            won = False
+
             sleep_quick()
             # Upgrade mode
             if no_upgrades:
@@ -107,7 +115,10 @@ def main(no_upgrades=False):
             # Exponential distribution - higher numbers exponentially less likely
             time.sleep(min(120, random.expovariate(0.5) + 4))
         else:
-            time.sleep(0.5)
+            pixel_color = pyautogui.pixel(209, 315)
+            if pixel_color == hex_to_rgb(0x10FF00):
+                won = True
+            time.sleep(0.1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Grow Castle automation bot')
