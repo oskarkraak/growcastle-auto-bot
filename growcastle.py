@@ -73,13 +73,11 @@ def main(no_upgrades=False):
                 print("DEFEAT")
             won = False
 
-            sleep_quick()
+            # Exponential distribution - higher numbers exponentially less likely
+            time.sleep(min(60, random.expovariate(0.5)))
+
             # Upgrade mode
-            if no_upgrades:
-                # Skip upgrades, just switch back to battle
-                switch_pos = with_offset(battle_switch)
-                pyautogui.click(*switch_pos)
-            else:
+            if not no_upgrades:
                 target = random.choice(heroes + upgrades)
                 click_pos = with_offset(target)
                 
@@ -99,21 +97,25 @@ def main(no_upgrades=False):
                 else:
                     # Upgrade was chosen - additional upgrade-specific actions can go here
                     pyautogui.moveTo(*click_pos)
-                    sleep_quick()         
+                    sleep_quick()
                     pyautogui.mouseDown()
                     time.sleep(random.uniform(2, 3.5))
                     pyautogui.mouseUp()
                     sleep_quick()         
 
-                # Switch back to battle mode
-                switch_pos = with_offset(battle_switch)
-                pyautogui.click(*switch_pos)
+            # Switch back to battle mode
+            switch_pos = with_offset(battle_switch)
+            pyautogui.click(*switch_pos)
+
+            # Military Band (F) ability
+            sleep_quick()
+            pyautogui.click(*with_offset((1342, 334)))
+            sleep_quick()
+            pyautogui.click(*with_offset((751, 163)))
+            sleep_quick()
 
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")
-
-            # Exponential distribution - higher numbers exponentially less likely
-            time.sleep(min(120, random.expovariate(0.5) + 4))
         else:
             pixel_color = pyautogui.pixel(209, 315)
             if pixel_color == hex_to_rgb(0x10FF00):
