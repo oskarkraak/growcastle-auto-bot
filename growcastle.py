@@ -45,6 +45,10 @@ def hex_to_rgb(hex_value):
 def sleep_quick():
     time.sleep(random.uniform(0.2, 0.5))
 
+def is_boss_present():
+    pixel_color = pyautogui.pixel(1110, 113)
+    return pixel_color == hex_to_rgb(0xE84D4D)
+
 def main(no_upgrades=False):
     n_wave = 0
     while True:
@@ -55,7 +59,11 @@ def main(no_upgrades=False):
             target = random.choice(heroes + archers)
             click_pos = with_offset(target)
             pyautogui.click(*click_pos)
-            time.sleep(random.uniform(0, 3))
+            if is_boss_present():
+                max_skill_sleep_time = 0.1
+            else: 
+                max_skill_sleep_time = 1
+            time.sleep(random.uniform(0, max_skill_sleep_time))
         elif pixel_color == hex_to_rgb(MENU_HEX):
             sleep_quick()
             # Upgrade mode
@@ -99,10 +107,7 @@ def main(no_upgrades=False):
             # Exponential distribution - higher numbers exponentially less likely
             time.sleep(min(120, random.expovariate(0.5) + 4))
         else:
-            time.sleep(0.4)
-        
-        # Small delay to avoid CPU overuse
-        time.sleep(0.1)
+            time.sleep(0.5)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Grow Castle automation bot')
