@@ -45,7 +45,6 @@ def extract_rect_features(contours):
     return rects
 
 def assign_positions(rects, img_shape):
-    positions = ['Top', 'Top Left', 'Left', 'Bottom Left', 'Bottom', 'Bottom Right', 'Right', 'Top Right']
     img_h, img_w = img_shape[:2]
     center_x, center_y = img_w/2, img_h/2
     rect_angles = []
@@ -56,13 +55,16 @@ def assign_positions(rects, img_shape):
         angle = (math.degrees(math.atan2(-dy, dx)) + 360) % 360
         rect_angles.append((r['i'], angle, r))
     rect_angles_sorted = sorted(rect_angles, key=lambda x: x[1])
+    # Find the rectangle closest to 90deg (top)
     top_idx = min(range(len(rect_angles_sorted)), key=lambda i: abs(rect_angles_sorted[i][1]-90))
+    # Rotate so that top is first, then clockwise
     rect_angles_sorted = rect_angles_sorted[top_idx:] + rect_angles_sorted[:top_idx]
-    rect_angles_sorted = [rect_angles_sorted[0]] + rect_angles_sorted[:0:-1]
+    rect_angles_sorted = rect_angles_sorted[:1] + rect_angles_sorted[1:][::-1]
+    # Map positions 0-7 clockwise
     rect_pos_map = {}
-    for pos, (idx, angle, r) in zip(positions, rect_angles_sorted):
-        rect_pos_map[pos] = r
-    return rect_pos_map, positions
+    for pos_num, (idx, angle, r) in enumerate(rect_angles_sorted):
+        rect_pos_map[pos_num] = r
+    return rect_pos_map, list(range(len(rect_angles_sorted)))
 
 def visualize_results(img, rects, most_tilted, rect_pos_map, positions, output_path):
     for r in rects:
@@ -70,10 +72,10 @@ def visualize_results(img, rects, most_tilted, rect_pos_map, positions, output_p
         cv2.polylines(img, [r['box']], True, color, 2)
         cv2.putText(img, f"{r['i']}: {round(r['angle'],1)}", tuple(map(int, r['center'])), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
-    for pos_idx, pos in enumerate(positions):
-        r = rect_pos_map[pos]
+    for pos_num in range(len(positions)):
+        r = rect_pos_map[pos_num]
         cx, cy = map(int, r['center'])
-        cv2.putText(img, str(pos_idx), (cx, cy-15), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+        cv2.putText(img, str(pos_num), (cx, cy-15), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
     plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, img)
@@ -86,11 +88,15 @@ def get_most_tilted(image_path) -> int | None:
         return None
     most_tilted2 = max(rects2, key=lambda x: x['tilt_vert'])
     tilt_vert = most_tilted2['tilt_vert']
-    index = most_tilted2['i']
+
     if tilt_vert < 5:
         return None
-    else:
-        return index
+    rect_pos_map, positions = assign_positions(rects2, img.shape)
+    # Find which position number maps to the most tilted rectangle
+    for pos_num, r in rect_pos_map.items():
+        if r['i'] == most_tilted2['i']:
+            return pos_num
+    return None
 
 def main():
     img, thresh, closed = load_and_preprocess_image('captcha_screenshots/screenshot_005.png')
@@ -99,8 +105,8 @@ def main():
     most_tilted2 = max(rects2, key=lambda x: x['tilt_vert'])
     rect_pos_map, positions = assign_positions(rects2, img.shape)
     print("Rectangle to position mapping:")
-    for pos in positions:
-        print(f"{pos}: index={rect_pos_map[pos]['i']}, center={rect_pos_map[pos]['center']}")
+    for pos_num in positions:
+        print(f"{pos_num}: index={rect_pos_map[pos_num]['i']}, center={rect_pos_map[pos_num]['center']}")
     df = pd.DataFrame([{'Index':r['i'],
                         'Center':tuple(map(lambda v: round(v,2), r['center'])),
                         'Angle':round(r['angle'],2),
