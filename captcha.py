@@ -29,37 +29,6 @@ print(len(contours), len(filtered))
 filtered_sorted = sorted(filtered, key=cv2.contourArea, reverse=True)
 filtered_top8 = filtered_sorted[:8]
 
-# Compute angles
-rects = []
-for i, cnt in enumerate(filtered_top8):
-    rect = cv2.minAreaRect(cnt)  # ((cx,cy),(w,h), angle)
-    box = cv2.boxPoints(rect)
-    box = np.int0(box)
-    # Compute edges (adjacent)
-    edges = []
-    for j in range(4):
-        p1 = box[j]
-        p2 = box[(j+1)%4]
-        edge_vec = p2 - p1
-        length = np.linalg.norm(edge_vec)
-        edges.append((length, edge_vec, (p1,p2)))
-    # Longest edge
-    edges_sorted = sorted(edges, key=lambda x: x[0], reverse=True)
-    length, vec, pts = edges_sorted[0]
-    dx, dy = vec
-    angle = np.degrees(np.arctan2(dy, dx))
-    # Normalize to [0,180)
-    angle_norm = angle % 180
-    # Angle to horizontal: if >90, transform to 180-angle
-    angle_horiz = angle_norm if angle_norm <=90 else 180-angle_norm
-    # tilt from vertical
-    tilt_vert = 90 - angle_horiz
-    rects.append({'index':i, 'center':rect[0],'angle':angle, 'angle_norm':angle_norm,
-                  'angle_horiz':angle_horiz, 'tilt_vert':tilt_vert, 'box':box})
-# Identify most tilted (max tilt_vert)
-most_tilted = max(rects, key=lambda x: x['tilt_vert'])
-most_tilted
-
 # Try without morphological closing
 contours2, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 filtered2 = [cnt for cnt in contours2 if cv2.contourArea(cnt) > 2000]
@@ -88,7 +57,38 @@ for i, cnt in enumerate(filtered2_sorted):
                    'angle_horiz':angle_horiz, 'tilt_vert':tilt_vert, 'box':box})
 # identify most tilted
 most_tilted2 = max(rects2, key=lambda x: x['tilt_vert'])
-rects2, most_tilted2
+
+# --- Assign positions to each rectangle ---
+# Define positions in order (fixed: swapped Left/Right)
+positions = ['Top', 'Top Left', 'Left', 'Bottom Left', 'Bottom', 'Bottom Right', 'Right', 'Top Right']
+# Get image center
+img_h, img_w = img.shape[:2]
+center_x, center_y = img_w/2, img_h/2
+# Compute angle from image center to each rect center
+import math
+rect_angles = []
+for r in rects2:
+    cx, cy = r['center']
+    dx = cx - center_x
+    dy = cy - center_y
+    angle = (math.degrees(math.atan2(-dy, dx)) + 360) % 360  # y axis inverted for image
+    rect_angles.append((r['i'], angle, r))
+# Sort by angle (0=right, 90=up, 180=left, 270=down)
+rect_angles_sorted = sorted(rect_angles, key=lambda x: x[1])
+# Assign positions by angle order: start from Top (90deg), go clockwise
+# Find the rect closest to 90deg (top)
+top_idx = min(range(len(rect_angles_sorted)), key=lambda i: abs(rect_angles_sorted[i][1]-90))
+# Reorder so that top is first, then clockwise
+rect_angles_sorted = rect_angles_sorted[top_idx:] + rect_angles_sorted[:top_idx]
+# Invert all except the first item (keep top first, then reverse the rest)
+rect_angles_sorted = [rect_angles_sorted[0]] + rect_angles_sorted[:0:-1]
+# Now assign positions
+rect_pos_map = {}
+for pos, (idx, angle, r) in zip(positions, rect_angles_sorted):
+    rect_pos_map[pos] = r
+print("Rectangle to position mapping:")
+for pos in positions:
+    print(f"{pos}: index={rect_pos_map[pos]['i']}, center={rect_pos_map[pos]['center']}")
 
 import pandas as pd
 df = pd.DataFrame([{'Index':r['i'],
@@ -107,9 +107,14 @@ for r in rects2:
     cv2.polylines(img, [r['box']], True, color, 2)
     cv2.putText(img, f"{r['i']}: {round(r['angle'],1)}", tuple(map(int, r['center'])), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+# Draw position numbers (0-7) at each log's center in clockwise order
+for pos_idx, pos in enumerate(positions):
+    r = rect_pos_map[pos]
+    cx, cy = map(int, r['center'])
+    cv2.putText(img, str(pos_idx), (cx, cy-15), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
 plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 import os
-output_path = 'captcha_screenshots/rects_visualization.png'
+output_path = './rects_visualization.png'
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 cv2.imwrite(output_path, img)
 
