@@ -53,9 +53,10 @@ def is_boss_present():
     pixel_color = pyautogui.pixel(1110, 113)
     return pixel_color == hex_to_rgb(0xE84D4D)
 
-def main(no_upgrades=False, no_solve_captcha=False):
+def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     n_wave = 0
     won = False
+    captcha_attempt = 0
     while True:
         battle_button_pixel_color = pyautogui.pixel(1755, 939)
         captcha_diamond_pixel_color = pyautogui.pixel(1010, 532)
@@ -64,11 +65,15 @@ def main(no_upgrades=False, no_solve_captcha=False):
             if no_solve_captcha:
                 time.sleep(1)
                 continue
-            print("Solving captcha")
+            captcha_attempt += 1
+            if captcha_attempt > captcha_retry_attempts:
+                print(f"Captcha solving failed after {captcha_retry_attempts} attempts. Exiting.")
+                exit(1)
+            print(f"Solving captcha (attempt {captcha_attempt})")
 
             pyautogui.click(*with_offset((1428, 841)))
             # Create folder for screenshots
-            folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
             os.makedirs(folder_name, exist_ok=True)
 
             # Take screenshots for 3 seconds continuously
@@ -90,8 +95,8 @@ def main(no_upgrades=False, no_solve_captcha=False):
                     break
             
             if log_index is None:
-                print("Failed to solve captcha: No tilted log found.")
-                exit(1)
+                print("Failed to solve captcha: No tilted log found. Random log selected.")
+                log_index = random.randint(0, len(captcha_logs) - 1)
 
             target = captcha_logs[log_index]
             click_pos = with_offset(target)
@@ -101,6 +106,10 @@ def main(no_upgrades=False, no_solve_captcha=False):
 
             sleep_quick()
         elif battle_button_pixel_color == hex_to_rgb(BATTLE_HEX):
+            if captcha_attempt > 0:
+                captcha_attempt = 0
+                print("Captcha solved")
+
             # Battle mode
             target = random.choice(heroes + archers)
             click_pos = with_offset(target)
@@ -173,6 +182,8 @@ if __name__ == "__main__":
                        help='Skip upgrade actions and only perform battle actions')
     parser.add_argument('--no-solve-captcha', action='store_true',
                        help='Skip solving captchas (bot will wait if captcha appears)')
+    parser.add_argument('--captcha-retry-attempts', type=int, default=3,
+                       help='Number of retry attempts for solving captcha (default: 3)')
     args = parser.parse_args()
     
-    main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha)
+    main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha, captcha_retry_attempts=args.captcha_retry_attempts)
