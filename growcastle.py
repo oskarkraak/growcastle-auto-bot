@@ -53,7 +53,7 @@ def is_boss_present():
     pixel_color = pyautogui.pixel(1110, 113)
     return pixel_color == hex_to_rgb(0xE84D4D)
 
-def main(no_upgrades=False):
+def main(no_upgrades=False, no_solve_captcha=False):
     n_wave = 0
     won = False
     while True:
@@ -61,6 +61,9 @@ def main(no_upgrades=False):
         captcha_diamond_pixel_color = pyautogui.pixel(1010, 532)
         
         if captcha_diamond_pixel_color == hex_to_rgb(0x42C3FF):
+            if no_solve_captcha:
+                time.sleep(1)
+                continue
             print("Solving captcha")
 
             pyautogui.click(*with_offset((1428, 841)))
@@ -168,6 +171,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Grow Castle automation bot')
     parser.add_argument('--no-upgrades', action='store_true', 
                        help='Skip upgrade actions and only perform battle actions')
+    parser.add_argument('--no-solve-captcha', action='store_true',
+                       help='Skip solving captchas (bot will wait if captcha appears)')
     args = parser.parse_args()
     
-    main(no_upgrades=args.no_upgrades)
+    main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha)
