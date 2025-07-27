@@ -78,6 +78,20 @@ def visualize_results(img, rects, most_tilted, rect_pos_map, positions, output_p
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, img)
 
+def get_most_tilted(image_path) -> int | None:
+    img, thresh, _ = load_and_preprocess_image(image_path)
+    filtered2_sorted = find_and_filter_contours(thresh)
+    rects2 = extract_rect_features(filtered2_sorted)
+    if not rects2:
+        return None
+    most_tilted2 = max(rects2, key=lambda x: x['tilt_vert'])
+    tilt_vert = most_tilted2['tilt_vert']
+    index = most_tilted2['i']
+    if tilt_vert < 5:
+        return None
+    else:
+        return index
+
 def main():
     img, thresh, closed = load_and_preprocess_image('captcha_screenshots/screenshot_005.png')
     filtered2_sorted = find_and_filter_contours(thresh)
