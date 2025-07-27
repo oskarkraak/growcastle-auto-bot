@@ -8,12 +8,16 @@ except ImportError:
 
 import random
 import time
+import os
+from datetime import datetime
+import captcha
 
 # Coordinates
 archers = [(316, 577), (316, 738)]
 heroes = [(537, 546), (640, 546), (750, 546), (537, 431), (640, 431), (750, 431), (537, 302), (640, 302), (750, 302)]
 upgrades = [(1442, 218), (1440, 348)]
 battle_switch = (1755, 939)
+captcha_logs = [(1007, 370), (1124, 410), (1172, 532), (1133, 654), (1007, 696), (885, 657), (844, 534), (887, 412)]
 
 MENU_HEX = 0xBFB9AC
 BATTLE_HEX = 0x6E6256
@@ -53,9 +57,47 @@ def main(no_upgrades=False):
     n_wave = 0
     won = False
     while True:
-        pixel_color = pyautogui.pixel(1755, 939)
+        battle_button_pixel_color = pyautogui.pixel(1755, 939)
+        captcha_diamond_pixel_color = pyautogui.pixel(1010, 532)
         
-        if pixel_color == hex_to_rgb(BATTLE_HEX):
+        if captcha_diamond_pixel_color == hex_to_rgb(0x42C3FF):
+            print("Solving captcha")
+
+            pyautogui.click(*with_offset((1428, 841)))
+            # Create folder for screenshots
+            folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            os.makedirs(folder_name, exist_ok=True)
+
+            # Take screenshots for 3 seconds continuously
+            start_time = time.time()
+            screenshot_count = 0
+            while time.time() - start_time < 3:
+                screenshot = pyautogui.screenshot(region=(766, 272, 500, 500))  # x, y, width, height around captcha area
+                screenshot.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
+                screenshot_count += 1
+                # No sleep to achieve faster capture rate
+                # The actual rate will be limited by screenshot and save
+
+            # Go through screenshots from last to first
+            for i in reversed(range(screenshot_count)):
+                screenshot_path = f"{folder_name}/screenshot_{i:03d}.png"
+                log_index = captcha.get_most_tilted(screenshot_path)
+                if log_index is not None:
+                    print(f"Most tilted log (number {log_index} clockwise) found in: {screenshot_path}")
+                    break
+            
+            if log_index is None:
+                print("Failed to solve captcha: No tilted log found.")
+                exit(1)
+
+            target = captcha_logs[log_index]
+            click_pos = with_offset(target)
+            pyautogui.moveTo(*click_pos)
+            time.sleep(random.uniform(1, 2))
+            pyautogui.click(*click_pos)
+
+            sleep_quick()
+        elif battle_button_pixel_color == hex_to_rgb(BATTLE_HEX):
             # Battle mode
             target = random.choice(heroes + archers)
             click_pos = with_offset(target)
@@ -65,7 +107,7 @@ def main(no_upgrades=False):
             else: 
                 max_skill_sleep_time = 1
             time.sleep(random.uniform(0, max_skill_sleep_time))
-        elif pixel_color == hex_to_rgb(MENU_HEX):
+        elif battle_button_pixel_color == hex_to_rgb(MENU_HEX):
             # Reset won
             if won:
                 print("VICTORY")
@@ -117,8 +159,8 @@ def main(no_upgrades=False):
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")
         else:
-            pixel_color = pyautogui.pixel(209, 315)
-            if pixel_color == hex_to_rgb(0x10FF00):
+            battle_button_pixel_color = pyautogui.pixel(209, 315)
+            if battle_button_pixel_color == hex_to_rgb(0x10FF00):
                 won = True
             time.sleep(0.1)
 
