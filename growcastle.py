@@ -20,7 +20,7 @@ battle_switch = (1755, 939)
 captcha_logs = [(1007, 370), (1124, 410), (1172, 532), (1133, 654), (1007, 696), (885, 657), (844, 534), (887, 412)]
 
 MENU_HEX = 0xBFB9AC
-BATTLE_HEX = 0x6E6256
+BATTLE_HEX = 0x6E6255
 
 # Optional PyAutoGUI settings
 pyautogui.FAILSAFE = True  # Move mouse to a corner to abort
