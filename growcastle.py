@@ -311,32 +311,23 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                     target = random.choice(one_click_upgrades)
                     click_pos = with_offset(tuple(target))
                     adb_tap(*click_pos)
-                    sleep_quick()
                     adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    sleep_quick()
                 elif upgrade_type == "menu" and menu_upgrades:
                     target = random.choice(menu_upgrades)
                     click_pos = with_offset(tuple(target))
                     adb_tap(*click_pos)
-                    sleep_quick()
                     adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    sleep_quick()
 
-                    sleep_quick()
                     hero_pos = with_offset(tuple(hero_upgrade_button["coord"]))
                     adb_swipe(hero_pos[0], hero_pos[1], hero_pos[0], hero_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    sleep_quick()
                     adb_tap(*with_offset(tuple(hero_window_close1["coord"])))
-                    sleep_quick()
                     adb_tap(*with_offset(tuple(hero_window_close2["coord"])))
-                    sleep_quick()
 
             switch_pos = with_offset(tuple(battle_switch))
             adb_tap(*switch_pos)
-            time.sleep(random.uniform(2, 3))
+            time.sleep(random.uniform(0.5, 1))
 
             adb_tap(*with_offset(tuple(close_popup["coord"])))
-            sleep_quick()
             adb_tap(*with_offset(tuple(military_band_f["coord"])))
 
             n_wave = n_wave + 1
