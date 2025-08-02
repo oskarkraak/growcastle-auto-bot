@@ -1,17 +1,57 @@
+
 import sys
 import argparse
 import json
-try:
-    import pyautogui
-except ImportError:
-    print("Error: pyautogui module not found. Install with 'pip install pyautogui'.")
-    sys.exit(1)
+
 
 import random
 import time
 import os
 from datetime import datetime
 import captcha
+import subprocess
+import tempfile
+from PIL import Image
+import matplotlib.pyplot as plt
+
+# --- ADB Utility Functions ---
+ADB_DEVICE = "127.0.0.1:5555"
+def adb_shell(cmd):
+    result = subprocess.run(["adb", "-s", ADB_DEVICE, "shell"] + cmd, capture_output=True, text=True)
+    return result.stdout.strip()
+
+def adb_tap(x, y):
+    start_time = time.time()
+    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "input", "tap", str(int(x)), str(int(y))])
+    elapsed_time = time.time() - start_time
+    print(f"adb_tap took {elapsed_time:.3f} seconds")
+
+def adb_screenshot(path):
+    tmp = "/sdcard/screen_tmp.png"
+    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "screencap", "-p", tmp])
+    subprocess.run(["adb", "-s", ADB_DEVICE, "pull", tmp, path], capture_output=True)
+    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", tmp])
+
+def get_pixel_color(img_path, x, y):
+    img = Image.open(img_path).convert("RGB")
+    return img.getpixel((int(x), int(y)))
+
+def adb_swipe(x1, y1, x2, y2, duration_ms=300):
+    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "input", "swipe", str(int(x1)), str(int(y1)), str(int(x2)), str(int(y2)), str(int(duration_ms))])
+
+def show_screenshot_and_get_click(img_path, prompt):
+    img = Image.open(img_path)
+    fig, ax = plt.subplots()
+    ax.imshow(img)
+    plt.title(prompt)
+    coords = []
+    def onclick(event):
+        if event.xdata is not None and event.ydata is not None:
+            coords.append((int(event.xdata), int(event.ydata)))
+            plt.close()
+    cid = fig.canvas.mpl_connect('button_press_event', onclick)
+    plt.show()
+    return coords[0] if coords else None
 
 
 # Config file path
@@ -28,15 +68,17 @@ def save_config(config):
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
 
+
 def setup_config(add_mode=False):
-    print("=== Grow Castle Bot Config Setup ===")
-    print("You will be prompted to click on various points in the game window. Move your mouse to the requested location and press Enter.")
-    # Load existing config if present, else start new
+    print("=== Grow Castle Bot Config Setup (ADB Screenshot Mode) ===")
+    print("For each requested point, a screenshot of your device will be shown. Click on the correct location in the screenshot window.")
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r") as f:
             config = json.load(f)
     else:
         config = {}
+
+    screenshot_path = os.path.join(tempfile.gettempdir(), "growcastle_setup.png")
 
     if add_mode:
         print("=== Add to menu_upgrades and abilities ===")
@@ -45,12 +87,16 @@ def setup_config(add_mode=False):
                 config[key] = []
             print(f"Now adding to: {desc}")
             while True:
-                val = input("Move mouse to point and press Enter, or type 'done' to finish: ")
-                if val.strip().lower() == 'done':
+                input("Prepare the screen on your device, then press Enter to take a screenshot...")
+                adb_screenshot(screenshot_path)
+                print("Click on the desired point in the screenshot window, or close the window to finish.")
+                try:
+                    x, y = show_screenshot_and_get_click(screenshot_path, f"{desc} (click or close to finish)")
+                    config[key].append([x, y])
+                    print(f"Added: {x}, {y}")
+                except Exception:
+                    print("Done adding points.")
                     break
-                x, y = pyautogui.position()
-                config[key].append([x, y])
-                print(f"Added: {x}, {y}")
         save_config(config)
         print(f"Config saved to {CONFIG_PATH}.")
         print("You can now run the bot normally.")
@@ -69,12 +115,11 @@ def setup_config(add_mode=False):
         {"name": "hero_window_close2", "desc": "Second hero window close button position (final close)"},
     ]
 
-    # Dynamic points for logs, upgrades, and abilities
     dynamic_points = [
-        {"name": "captcha_logs", "desc": "Captcha log positions (click each log in order, press Enter after each, type 'done' when finished)", "multi": True},
-        {"name": "one_click_upgrades", "desc": "One-click upgrade positions (click each, press Enter after each, type 'done' when finished)", "multi": True},
-        {"name": "menu_upgrades", "desc": "Menu upgrade positions (click each, press Enter after each, type 'done' when finished)", "multi": True},
-        {"name": "abilities", "desc": "Ability positions (click each, press Enter after each, type 'done' when finished)", "multi": True},
+        {"name": "captcha_logs", "desc": "Captcha log positions (click each log in order, close window when finished)", "multi": True},
+        {"name": "one_click_upgrades", "desc": "One-click upgrade positions (click each, close window when finished)", "multi": True},
+        {"name": "menu_upgrades", "desc": "Menu upgrade positions (click each, close window when finished)", "multi": True},
+        {"name": "abilities", "desc": "Ability positions (click each, close window when finished)", "multi": True},
         {"name": "battle_switch", "desc": "Battle switch button (for switching back to battle mode)", "multi": False},
     ]
 
@@ -83,9 +128,11 @@ def setup_config(add_mode=False):
         if stage["name"] in config and config[stage["name"]]:
             print(f"{stage['name']} already set, skipping.")
             continue
-        input(f"Move mouse to {stage['desc']} and press Enter...")
-        x, y = pyautogui.position()
-        color = pyautogui.pixel(x, y)
+        input(f"Prepare the screen for: {stage['desc']}, then press Enter to take a screenshot...")
+        adb_screenshot(screenshot_path)
+        print(f"Click on the {stage['desc']} in the screenshot window.")
+        x, y = show_screenshot_and_get_click(screenshot_path, stage['desc'])
+        color = get_pixel_color(screenshot_path, x, y)
         config[stage["name"]] = {"coord": [x, y], "color": color}
         print(f"Recorded {stage['name']}: {x}, {y}, color: {color}")
 
@@ -98,16 +145,22 @@ def setup_config(add_mode=False):
         if dp.get("multi"):
             print(f"Now setting up: {dp['desc']}")
             while True:
-                val = input("Move mouse to point and press Enter, or type 'done' to finish: ")
-                if val.strip().lower() == 'done':
+                input(f"Prepare the screen for: {dp['desc']}, then press Enter to take a screenshot...")
+                adb_screenshot(screenshot_path)
+                print("Click on the desired point in the screenshot window, or close the window to finish.")
+                try:
+                    x, y = show_screenshot_and_get_click(screenshot_path, dp['desc'] + " (click or close to finish)")
+                    points.append([x, y])
+                    print(f"Recorded: {x}, {y}")
+                except Exception:
+                    print("Done with this set.")
                     break
-                x, y = pyautogui.position()
-                points.append([x, y])
-                print(f"Recorded: {x}, {y}")
             config[dp["name"]] = points
         else:
-            input(f"Move mouse to {dp['desc']} and press Enter...")
-            x, y = pyautogui.position()
+            input(f"Prepare the screen for: {dp['desc']}, then press Enter to take a screenshot...")
+            adb_screenshot(screenshot_path)
+            print(f"Click on the {dp['desc']} in the screenshot window.")
+            x, y = show_screenshot_and_get_click(screenshot_path, dp['desc'])
             config[dp["name"]] = [x, y]
             print(f"Recorded: {x}, {y}")
 
@@ -116,11 +169,9 @@ def setup_config(add_mode=False):
     print("You can now run the bot normally.")
     sys.exit(0)
 
-# Optional PyAutoGUI settings
-pyautogui.FAILSAFE = True  # Move mouse to a corner to abort
-pyautogui.PAUSE = 0.1      # Small pause after each PyAutoGUI call
 
-def with_offset(coord, max_offset=40):
+
+def with_offset(coord, max_offset=20):
     """Apply a random offset to a coordinate."""
     x, y = coord
     return x + random.randint(-max_offset, max_offset), y + random.randint(-max_offset, max_offset)
@@ -143,13 +194,17 @@ def hex_to_rgb(hex_value):
 def sleep_quick():
     time.sleep(random.uniform(0.2, 0.5))
 
+
 def is_boss_present():
     config = load_config()
     boss_pixel = config.get("boss_pixel")
     x, y = boss_pixel["coord"]
     expected_color = tuple(boss_pixel["color"])
-    pixel_color = pyautogui.pixel(x, y)
+    screenshot_path = os.path.join(tempfile.gettempdir(), "growcastle_check.png")
+    adb_screenshot(screenshot_path)
+    pixel_color = get_pixel_color(screenshot_path, x, y)
     return pixel_color == expected_color
+
 
 
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
@@ -172,10 +227,15 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     n_wave = 0
     won = False
     captcha_attempt = 0
+    screenshot_path = os.path.join(tempfile.gettempdir(), "growcastle_loop.png")
     while True:
-        battle_button_pixel_color = pyautogui.pixel(*battle_button["coord"])
-        menu_button_pixel_color = pyautogui.pixel(*menu_button["coord"])
-        captcha_diamond_pixel_color = pyautogui.pixel(*captcha_diamond["coord"])
+        start_time = time.time()
+        adb_screenshot(screenshot_path)
+        elapsed_time = time.time() - start_time
+        print(f"adb_screenshot took {elapsed_time:.3f} seconds")
+        battle_button_pixel_color = get_pixel_color(screenshot_path, *battle_button["coord"])
+        menu_button_pixel_color = get_pixel_color(screenshot_path, *menu_button["coord"])
+        captcha_diamond_pixel_color = get_pixel_color(screenshot_path, *captcha_diamond["coord"])
 
         if captcha_diamond_pixel_color == tuple(captcha_diamond["color"]):
             if no_solve_captcha:
@@ -187,8 +247,8 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 exit(1)
             print(f"Solving captcha (attempt {captcha_attempt})")
 
-            # Click diamond (use offset from config if needed)
-            pyautogui.click(*with_offset(tuple(captcha_diamond["coord"])))
+            # Tap diamond (use offset from config if needed)
+            adb_tap(*with_offset(tuple(captcha_diamond["coord"])))
             # Create folder for screenshots
             folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
             os.makedirs(folder_name, exist_ok=True)
@@ -196,20 +256,21 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             # Take screenshots for 3 seconds continuously
             start_time = time.time()
             screenshot_count = 0
-            # Use region around diamond, or default
             region = (captcha_diamond["coord"][0] - 244, captcha_diamond["coord"][1] - 260, 500, 500)
             while time.time() - start_time < 3:
-                screenshot = pyautogui.screenshot(region=region)
-                screenshot.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
+                adb_screenshot(screenshot_path)
+                img = Image.open(screenshot_path)
+                region_img = img.crop((region[0], region[1], region[0]+region[2], region[1]+region[3]))
+                region_img.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
                 screenshot_count += 1
 
             # Go through screenshots from last to first
             log_index = None
             for i in reversed(range(screenshot_count)):
-                screenshot_path = f"{folder_name}/screenshot_{i:03d}.png"
-                log_index = captcha.get_most_tilted(screenshot_path)
+                screenshot_file = f"{folder_name}/screenshot_{i:03d}.png"
+                log_index = captcha.get_most_tilted(screenshot_file)
                 if log_index is not None:
-                    print(f"Most tilted log (number {log_index} clockwise) found in: {screenshot_path}")
+                    print(f"Most tilted log (number {log_index} clockwise) found in: {screenshot_file}")
                     break
 
             if log_index is None:
@@ -218,10 +279,8 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
 
             target = captcha_logs[log_index]
             click_pos = with_offset(tuple(target))
-            pyautogui.moveTo(*click_pos)
+            adb_tap(*click_pos)
             time.sleep(random.uniform(1, 2))
-            pyautogui.click(*click_pos)
-
             sleep_quick()
         elif battle_button_pixel_color == tuple(battle_button["color"]):
             if captcha_attempt > 0:
@@ -232,76 +291,60 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             if abilities:
                 target = random.choice(abilities)
                 click_pos = with_offset(tuple(target))
-                pyautogui.click(*click_pos)
+                adb_tap(*click_pos)
             if is_boss_present():
-                max_skill_sleep_time = 0.1
+                pass  # TODO
             else:
-                max_skill_sleep_time = 1
-            time.sleep(random.uniform(0, max_skill_sleep_time))
+                pass
         elif menu_button_pixel_color == tuple(menu_button["color"]):
-            # Reset won
             if won:
                 print("VICTORY")
             else:
                 print("DEFEAT")
             won = False
 
-            # Exponential distribution - higher numbers exponentially less likely
             time.sleep(min(60, random.expovariate(0.5)))
 
-            # Upgrade mode
             if not no_upgrades:
-                # Choose randomly between one_click_upgrades and menu_upgrades
                 upgrade_type = random.choice(["one_click", "menu"])
                 if upgrade_type == "one_click" and one_click_upgrades:
                     target = random.choice(one_click_upgrades)
                     click_pos = with_offset(tuple(target))
-                    pyautogui.moveTo(*click_pos)
+                    adb_tap(*click_pos)
                     sleep_quick()
-                    pyautogui.mouseDown()
-                    time.sleep(random.uniform(3, 4.5))
-                    pyautogui.mouseUp()
+                    adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
                     sleep_quick()
                 elif upgrade_type == "menu" and menu_upgrades:
                     target = random.choice(menu_upgrades)
                     click_pos = with_offset(tuple(target))
-                    pyautogui.moveTo(*click_pos)
+                    adb_tap(*click_pos)
                     sleep_quick()
-                    pyautogui.mouseDown()
-                    time.sleep(random.uniform(3, 4.5))
-                    pyautogui.mouseUp()
+                    adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
                     sleep_quick()
 
-                    # Hero upgrade sequence (configurable)
                     sleep_quick()
-                    pyautogui.moveTo(*with_offset(tuple(hero_upgrade_button["coord"])))
-                    pyautogui.mouseDown()
-                    time.sleep(random.uniform(3, 4.5))
-                    pyautogui.mouseUp()
+                    hero_pos = with_offset(tuple(hero_upgrade_button["coord"]))
+                    adb_swipe(hero_pos[0], hero_pos[1], hero_pos[0], hero_pos[1], duration_ms=int(random.uniform(3000, 4500)))
                     sleep_quick()
-                    pyautogui.click(*with_offset(tuple(hero_window_close1["coord"])))
+                    adb_tap(*with_offset(tuple(hero_window_close1["coord"])))
                     sleep_quick()
-                    pyautogui.click(*with_offset(tuple(hero_window_close2["coord"])))
+                    adb_tap(*with_offset(tuple(hero_window_close2["coord"])))
                     sleep_quick()
 
-            # Switch back to battle mode
             switch_pos = with_offset(tuple(battle_switch))
-            pyautogui.click(*switch_pos)
+            adb_tap(*switch_pos)
             time.sleep(random.uniform(2, 3))
 
-            # Close popup if present, then use Military Band (F) ability (now configurable)
-            pyautogui.click(*with_offset(tuple(close_popup["coord"])))
+            adb_tap(*with_offset(tuple(close_popup["coord"])))
             sleep_quick()
-            pyautogui.click(*with_offset(tuple(military_band_f["coord"])))
-            sleep_quick()
+            adb_tap(*with_offset(tuple(military_band_f["coord"])))
 
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")
         else:
-            win_panel_pixel_color = pyautogui.pixel(*win_panel["coord"])
+            win_panel_pixel_color = get_pixel_color(screenshot_path, *win_panel["coord"])
             if win_panel_pixel_color == tuple(win_panel["color"]):
                 won = True
-            time.sleep(0.1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Grow Castle automation bot')
