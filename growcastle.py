@@ -14,6 +14,23 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 # --- ADB Utility Functions ---
+# Reuse connection for faster commands
+_adb_connection = None
+
+def get_adb_connection():
+    global _adb_connection
+    if _adb_connection is None or _adb_connection.poll() is not None:
+        # Start persistent shell connection
+        _adb_connection = subprocess.Popen(
+            ["adb", "-s", ADB_DEVICE, "shell"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=0
+        )
+    return _adb_connection
+
 def adb_shell(cmd):
     result = subprocess.run(["adb", "-s", ADB_DEVICE, "shell"] + cmd, capture_output=True, text=True)
     return result.stdout.strip()
@@ -23,6 +40,39 @@ def adb_tap(x, y):
     subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "input", "tap", str(int(x)), str(int(y))])
     elapsed_time = time.time() - start_time
     print(f"adb_tap took {elapsed_time:.3f} seconds")
+
+def adb_tap_fast(x, y):
+    """Ultra-fast tap with safety checks to prevent random clicks"""
+    global _adb_connection
+    start_time = time.time()
+    #print(f"DEBUG: About to tap at ({x}, {y})")
+    
+    try:
+        conn = get_adb_connection()
+        if conn and conn.stdin and conn.poll() is None:
+            # Check if connection is still alive before using it
+            cmd = f"input tap {int(x)} {int(y)}\n"
+            conn.stdin.write(cmd)
+            conn.stdin.flush()
+            # Small delay to ensure command is processed
+            time.sleep(0.02)
+            elapsed_time = time.time() - start_time
+            print(f"adb_tap_fast took {elapsed_time:.3f} seconds")
+            return
+        else:
+            # Connection is dead, reset it
+            _adb_connection = None
+            print("DEBUG: Connection reset, using fallback")
+    except Exception as e:
+        print(f"DEBUG: Fast tap failed: {e}, using fallback")
+        # Reset connection on any error
+        _adb_connection = None
+    
+    # Fallback to reliable direct method
+    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "input", "tap", str(int(x)), str(int(y))], 
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elapsed_time = time.time() - start_time
+    print(f"adb_tap_fast (fallback) took {elapsed_time:.3f} seconds")
 
 def adb_screenshot(path):
     # Use exec-out for faster screenshot
@@ -172,7 +222,7 @@ def setup_config(add_mode=False):
 
 
 
-def with_offset(coord, max_offset=20):
+def with_offset(coord, max_offset=15):
     """Apply a random offset to a coordinate."""
     x, y = coord
     return x + random.randint(-max_offset, max_offset), y + random.randint(-max_offset, max_offset)
@@ -294,7 +344,9 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             if abilities:
                 target = random.choice(abilities)
                 click_pos = with_offset(tuple(target))
-                adb_tap(*click_pos)
+                #print(f"DEBUG: Using ability at {click_pos}")
+                adb_tap_fast(*click_pos)
+                sleep_quick()
             if is_boss_present():
                 pass  # TODO
             else:
@@ -313,25 +365,34 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 if upgrade_type == "one_click" and one_click_upgrades:
                     target = random.choice(one_click_upgrades)
                     click_pos = with_offset(tuple(target))
-                    adb_tap(*click_pos)
+                    adb_tap_fast(*click_pos)
+                    sleep_quick()
                     adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
+                    sleep_quick()
                 elif upgrade_type == "menu" and menu_upgrades:
                     target = random.choice(menu_upgrades)
                     click_pos = with_offset(tuple(target))
-                    adb_tap(*click_pos)
+                    adb_tap_fast(*click_pos)
+                    sleep_quick()
                     adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
+                    sleep_quick()
 
                     hero_pos = with_offset(tuple(hero_upgrade_button["coord"]))
                     adb_swipe(hero_pos[0], hero_pos[1], hero_pos[0], hero_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    adb_tap(*with_offset(tuple(hero_window_close1["coord"])))
-                    adb_tap(*with_offset(tuple(hero_window_close2["coord"])))
+                    sleep_quick()
+                    adb_tap_fast(*with_offset(tuple(hero_window_close1["coord"])))
+                    sleep_quick()
+                    adb_tap_fast(*with_offset(tuple(hero_window_close2["coord"])))
+                    sleep_quick()
 
             switch_pos = with_offset(tuple(battle_switch))
-            adb_tap(*switch_pos)
+            adb_tap_fast(*switch_pos)
             time.sleep(random.uniform(0.5, 1))
 
-            adb_tap(*with_offset(tuple(close_popup["coord"])))
-            adb_tap(*with_offset(tuple(military_band_f["coord"])))
+            adb_tap_fast(*with_offset(tuple(close_popup["coord"])))
+            sleep_quick()
+            adb_tap_fast(*with_offset(tuple(military_band_f["coord"])))
+            sleep_quick()
 
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")
