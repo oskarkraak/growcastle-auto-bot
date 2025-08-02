@@ -1,4 +1,3 @@
-
 import sys
 import argparse
 import json
@@ -15,7 +14,6 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 # --- ADB Utility Functions ---
-ADB_DEVICE = "127.0.0.1:5555"
 def adb_shell(cmd):
     result = subprocess.run(["adb", "-s", ADB_DEVICE, "shell"] + cmd, capture_output=True, text=True)
     return result.stdout.strip()
@@ -27,10 +25,9 @@ def adb_tap(x, y):
     print(f"adb_tap took {elapsed_time:.3f} seconds")
 
 def adb_screenshot(path):
-    tmp = "/sdcard/screen_tmp.png"
-    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "screencap", "-p", tmp])
-    subprocess.run(["adb", "-s", ADB_DEVICE, "pull", tmp, path], capture_output=True)
-    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", tmp])
+    # Use exec-out for faster screenshot
+    with open(path, 'wb') as f:
+        subprocess.run(["adb", "-s", ADB_DEVICE, "exec-out", "screencap", "-p"], stdout=f)
 
 def get_pixel_color(img_path, x, y):
     img = Image.open(img_path).convert("RGB")
@@ -49,9 +46,12 @@ def show_screenshot_and_get_click(img_path, prompt):
         if event.xdata is not None and event.ydata is not None:
             coords.append((int(event.xdata), int(event.ydata)))
             plt.close()
-    cid = fig.canvas.mpl_connect('button_press_event', onclick)
+    fig.canvas.mpl_connect('button_press_event', onclick)
     plt.show()
-    return coords[0] if coords else None
+    if coords:
+        return coords[0]
+    else:
+        return None
 
 
 # Config file path
@@ -78,7 +78,8 @@ def setup_config(add_mode=False):
     else:
         config = {}
 
-    screenshot_path = os.path.join(tempfile.gettempdir(), "growcastle_setup.png")
+    safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_setup_{safe_device}.png")
 
     if add_mode:
         print("=== Add to menu_upgrades and abilities ===")
@@ -200,7 +201,8 @@ def is_boss_present():
     boss_pixel = config.get("boss_pixel")
     x, y = boss_pixel["coord"]
     expected_color = tuple(boss_pixel["color"])
-    screenshot_path = os.path.join(tempfile.gettempdir(), "growcastle_check.png")
+    safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_check_{safe_device}.png")
     adb_screenshot(screenshot_path)
     pixel_color = get_pixel_color(screenshot_path, x, y)
     return pixel_color == expected_color
@@ -227,7 +229,8 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     n_wave = 0
     won = False
     captcha_attempt = 0
-    screenshot_path = os.path.join(tempfile.gettempdir(), "growcastle_loop.png")
+    safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_loop_{safe_device}.png")
     while True:
         start_time = time.time()
         adb_screenshot(screenshot_path)
@@ -349,7 +352,12 @@ if __name__ == "__main__":
                        help='Run interactive setup to create/update config file')
     parser.add_argument('--setup-add', action='store_true',
                        help='Add new points to menu_upgrades and abilities')
+    parser.add_argument('--adb-device', type=str, default='127.0.0.1:5555',
+                       help='ADB device serial (default: 127.0.0.1:5555)')
     args = parser.parse_args()
+
+    global ADB_DEVICE
+    ADB_DEVICE = args.adb_device
 
     if args.setup:
         setup_config()
