@@ -59,7 +59,7 @@ CONFIG_PATH = "config.json"
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(f"Config file '{CONFIG_PATH}' not found. Please run with --setup-config to create it.")
+        print(f"Config file '{CONFIG_PATH}' not found. Please run with --setup to create it.")
         sys.exit(1)
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
