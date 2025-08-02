@@ -164,6 +164,7 @@ def setup_config(add_mode=False):
         {"name": "hero_upgrade_button", "desc": "Hero upgrade button position (hold to upgrade hero)"},
         {"name": "hero_window_close1", "desc": "First hero window close button position (after upgrade)"},
         {"name": "hero_window_close2", "desc": "Second hero window close button position (final close)"},
+        {"name": "golden_horn_close", "desc": "Golden horn popup close button position"},
     ]
 
     dynamic_points = [
@@ -275,10 +276,12 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     hero_upgrade_button = config["hero_upgrade_button"]
     hero_window_close1 = config["hero_window_close1"]
     hero_window_close2 = config["hero_window_close2"]
+    golden_horn_close = config["golden_horn_close"]
 
     n_wave = 0
     won = False
     captcha_attempt = 0
+    no_battle_count = 0
     safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
     screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_loop_{safe_device}.png")
     while True:
@@ -335,6 +338,8 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             adb_tap(*click_pos)
             time.sleep(random.uniform(1, 2))
             sleep_quick()
+
+            no_battle_count = 0
         elif battle_button_pixel_color == tuple(battle_button["color"]):
             if captcha_attempt > 0:
                 captcha_attempt = 0
@@ -351,6 +356,8 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 pass  # TODO
             else:
                 pass
+
+            no_battle_count = 0
         elif menu_button_pixel_color == tuple(menu_button["color"]):
             if won:
                 print("VICTORY")
@@ -396,10 +403,28 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
 
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")
+            no_battle_count = 0
         else:
             win_panel_pixel_color = get_pixel_color(screenshot_path, *win_panel["coord"])
             if win_panel_pixel_color == tuple(win_panel["color"]):
                 won = True
+            
+            no_battle_count += 1
+            print(f"No battle mode detected, waiting... (count: {no_battle_count})")
+            
+            if no_battle_count >= 5:
+                if no_battle_count%2 == 0:
+                    print(f"No battle mode detected {no_battle_count} times, attempting to close hero windows...")
+                    adb_tap_fast(*with_offset(tuple(hero_window_close1["coord"])))
+                    sleep_quick()
+                    adb_tap_fast(*with_offset(tuple(hero_window_close2["coord"])))
+                    sleep_quick()
+                else:
+                    print(f"No battle mode detected {no_battle_count} times, attempting to close golden horn window...")
+                    adb_tap_fast(*with_offset(tuple(golden_horn_close["coord"])))
+                    sleep_quick()
+
+            time.sleep(1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Grow Castle automation bot')
