@@ -156,7 +156,8 @@ def setup_config(add_mode=False):
     stages = [
         {"name": "battle_button", "desc": "Golden horn button (when in battle mode)"},
         {"name": "menu_button", "desc": "Battle button (when in main menu)"},
-        {"name": "captcha_diamond", "desc": "Captcha diamond (when captcha is visible)"},
+        {"name": "captcha_diamond", "desc": "Captcha diamond (when captcha is visible - for detection only)"},
+        {"name": "captcha_start_button", "desc": "Captcha start button (to click when captcha appears)"},
         {"name": "win_panel", "desc": "Any green pixel on the victory panel on the top left after winning a wave (for win detection)"},
         {"name": "boss_pixel", "desc": "A red pixel on the boss health bar (for boss detection)"},
         {"name": "close_popup", "desc": "Popup close button position (for closing the popup at the start of a wave)"},
@@ -169,6 +170,7 @@ def setup_config(add_mode=False):
 
     dynamic_points = [
         {"name": "captcha_logs", "desc": "Captcha log positions (click each log in order, close window when finished)", "multi": True},
+        {"name": "captcha_region", "desc": "Captcha logs region (click upper-left corner, then bottom-right corner) - make sure to capture all the logs, but not anything else (no UI elements etc)", "multi": "corners"},
         {"name": "one_click_upgrades", "desc": "One-click upgrade positions (click each, close window when finished)", "multi": True},
         {"name": "menu_upgrades", "desc": "Menu upgrade positions (click each, close window when finished)", "multi": True},
         {"name": "abilities", "desc": "Ability positions (click each, close window when finished)", "multi": True},
@@ -194,7 +196,23 @@ def setup_config(add_mode=False):
             print(f"{dp['name']} already set, skipping.")
             continue
         points = []
-        if dp.get("multi"):
+        if dp.get("multi") == "corners":
+            print(f"Now setting up: {dp['desc']}")
+            print("First, click the upper-left corner of the captcha logs region.")
+            input("Prepare the screen for the captcha logs region, then press Enter to take a screenshot...")
+            adb_screenshot(screenshot_path)
+            x1, y1 = show_screenshot_and_get_click(screenshot_path, "Click upper-left corner of captcha logs region")
+            print(f"Upper-left corner: {x1}, {y1}")
+            
+            print("Now, click the bottom-right corner of the captcha logs region.")
+            input("Press Enter to take another screenshot...")
+            adb_screenshot(screenshot_path)
+            x2, y2 = show_screenshot_and_get_click(screenshot_path, "Click bottom-right corner of captcha logs region")
+            print(f"Bottom-right corner: {x2}, {y2}")
+            
+            config[dp["name"]] = {"upper_left": [x1, y1], "bottom_right": [x2, y2]}
+            print(f"Recorded captcha region: ({x1}, {y1}) to ({x2}, {y2})")
+        elif dp.get("multi"):
             print(f"Now setting up: {dp['desc']}")
             while True:
                 input(f"Prepare the screen for: {dp['desc']}, then press Enter to take a screenshot...")
@@ -267,9 +285,11 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     abilities = config["abilities"]
     battle_switch = config["battle_switch"]
     captcha_logs = config["captcha_logs"]
+    captcha_region = config["captcha_region"]
     battle_button = config["battle_button"]
     menu_button = config["menu_button"]
     captcha_diamond = config["captcha_diamond"]
+    captcha_start_button = config["captcha_start_button"]
     win_panel = config["win_panel"]
     close_popup = config["close_popup"]
     military_band_f = config["military_band_f"]
