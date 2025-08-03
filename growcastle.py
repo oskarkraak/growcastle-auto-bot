@@ -322,23 +322,60 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 print(f"Captcha solving failed after {captcha_retry_attempts} attempts. Exiting.")
                 exit(1)
             print(f"Solving captcha (attempt {captcha_attempt})")
-
-            # Tap diamond (use offset from config if needed)
-            adb_tap(*with_offset(tuple(captcha_diamond["coord"])))
+            
             # Create folder for screenshots
             folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
             os.makedirs(folder_name, exist_ok=True)
 
-            # Take screenshots for 3 seconds continuously
-            start_time = time.time()
+            # Click the captcha start button to initiate the captcha
+            adb_tap_fast(*with_offset(tuple(captcha_start_button["coord"])))
+
+            # Start screen recording
+            video_path = f"{folder_name}/captcha_recording.mp4"
+            recording_process = subprocess.Popen(
+                ["adb", "-s", ADB_DEVICE, "shell", "screenrecord", "--time-limit", "7", "/sdcard/captcha_recording.mp4"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            
+            # Wait for recording to complete
+            recording_process.wait()
+            
+            # Pull the video file
+            subprocess.run(["adb", "-s", ADB_DEVICE, "pull", "/sdcard/captcha_recording.mp4", video_path])
+            subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", "/sdcard/captcha_recording.mp4"])
+            
+            extraction_fps = 40
+            import cv2
+            cap = cv2.VideoCapture(video_path)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_interval = max(1, int(fps / extraction_fps))  # Extract every nth frame to get ~extraction_fps fps
+            
             screenshot_count = 0
-            region = (captcha_diamond["coord"][0] - 244, captcha_diamond["coord"][1] - 260, 500, 500)
-            while time.time() - start_time < 3:
-                adb_screenshot(screenshot_path)
-                img = Image.open(screenshot_path)
-                region_img = img.crop((region[0], region[1], region[0]+region[2], region[1]+region[3]))
-                region_img.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
-                screenshot_count += 1
+            frame_num = 0
+            # Use the configured captcha region for cropping
+            x1, y1 = captcha_region["upper_left"]
+            x2, y2 = captcha_region["bottom_right"]
+            region = (x1, y1, x2 - x1, y2 - y1)
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                if frame_num % frame_interval == 0:
+                    # Convert BGR to RGB and create PIL image
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    img = Image.fromarray(frame_rgb)
+                    
+                    # Crop to region of interest
+                    region_img = img.crop((region[0], region[1], region[0]+region[2], region[1]+region[3]))
+                    region_img.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
+                    screenshot_count += 1
+                    
+                frame_num += 1
+            
+            cap.release()
+            os.remove(video_path)  # Clean up video file
 
             # Go through screenshots from last to first
             log_index = None
