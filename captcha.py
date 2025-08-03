@@ -82,7 +82,10 @@ def visualize_results(img, rects, most_tilted, rect_pos_map, positions, output_p
 
 def get_most_tilted(image_path) -> int | None:
     img, thresh, _ = load_and_preprocess_image(image_path)
-    filtered2_sorted = find_and_filter_contours(thresh)
+    # Adjust area threshold based on image size
+    img_area = img.shape[0] * img.shape[1]
+    area_thresh = max(500, int(img_area * 0.008))
+    filtered2_sorted = find_and_filter_contours(thresh, area_thresh=area_thresh)
     rects2 = extract_rect_features(filtered2_sorted)
     if not rects2:
         return None
@@ -99,9 +102,15 @@ def get_most_tilted(image_path) -> int | None:
     return None
 
 def main():
-    img, thresh, closed = load_and_preprocess_image('captcha_screenshots/screenshot_005.png')
-    filtered2_sorted = find_and_filter_contours(thresh)
+    img, thresh, closed = load_and_preprocess_image('captcha_screenshots/20250803_181211_attempt1/screenshot_053.png')
+    # Adjust area threshold based on image size
+    img_area = img.shape[0] * img.shape[1]
+    area_thresh = max(500, int(img_area * 0.008))  # Scale threshold with image size
+    filtered2_sorted = find_and_filter_contours(thresh, area_thresh=area_thresh)
     rects2 = extract_rect_features(filtered2_sorted)
+    if not rects2:
+        print("No rectangles found. Try adjusting the area threshold.")
+        return
     most_tilted2 = max(rects2, key=lambda x: x['tilt_vert'])
     rect_pos_map, positions = assign_positions(rects2, img.shape)
     print("Rectangle to position mapping:")
