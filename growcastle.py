@@ -510,6 +510,18 @@ if __name__ == "__main__":
     global CONFIG_PATH
     CONFIG_PATH = args.config
 
+    # Wait for ADB device to be ready
+    print("Connecting...")
+    adb_device_running = False
+    while not adb_device_running:
+        adb_connect = subprocess.run(["adb", "connect", ADB_DEVICE], capture_output=True, text=True)
+        output = adb_connect.stdout.strip()
+        if "connected" in output:
+            adb_device_running = True
+            print(output)
+        else:
+            time.sleep(1)
+
     if args.setup:
         setup_config()
     elif args.setup_add:
