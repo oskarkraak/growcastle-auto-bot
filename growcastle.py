@@ -151,6 +151,8 @@ def setup_config(add_mode=False):
         sys.exit(0)
 
     stages = [
+        {"name": "android_home_screen_bottom_right", "desc": "Bottom right of the android home screen (crash detection)"},
+        {"name": "android_home_screen_growcastle_icon", "desc": "GrowCastle icon on the android home screen (to start the game)"},
         {"name": "battle_button", "desc": "Golden horn button (when in battle mode)"},
         {"name": "menu_button", "desc": "Battle button (when in main menu)"},
         {"name": "captcha_diamond", "desc": "Captcha diamond (when captcha is visible - for detection only)"},
@@ -277,6 +279,8 @@ def is_boss_present():
 
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     config = load_config()
+    android_home_screen_bottom_right = config["android_home_screen_bottom_right"]
+    android_home_screen_growcastle_icon = config["android_home_screen_growcastle_icon"]
     one_click_upgrades = config["one_click_upgrades"]
     menu_upgrades = config["menu_upgrades"]
     abilities = config["abilities"]
@@ -306,11 +310,14 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
         adb_screenshot(screenshot_path)
         elapsed_time = time.time() - start_time
         print(f"adb_screenshot took {elapsed_time:.3f} seconds")
+        android_home_screen_pixel_color = get_pixel_color(screenshot_path, *android_home_screen_bottom_right["coord"])
         battle_button_pixel_color = get_pixel_color(screenshot_path, *battle_button["coord"])
         menu_button_pixel_color = get_pixel_color(screenshot_path, *menu_button["coord"])
         captcha_diamond_pixel_color = get_pixel_color(screenshot_path, *captcha_diamond["coord"])
 
-        if captcha_diamond_pixel_color == tuple(captcha_diamond["color"]):
+        if android_home_screen_pixel_color == tuple(android_home_screen_bottom_right["color"]):
+            adb_tap_fast(*tuple(android_home_screen_growcastle_icon["coord"]))
+        elif captcha_diamond_pixel_color == tuple(captcha_diamond["color"]):
             if no_solve_captcha:
                 time.sleep(1)
                 continue
