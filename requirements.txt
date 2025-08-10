@@ -1,0 +1,5 @@
+rich==13.7.1
+Pillow>=9.5.0
+opencv-python>=4.9.0
+matplotlib>=3.8.0
+pandas>=2.0.0
