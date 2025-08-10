@@ -36,12 +36,14 @@ class InstanceState:
     log_index: Optional[int] = None
     last_update: float = field(default_factory=time.time)
     uptime_start: float = field(default_factory=time.time)
+    uptime_stop: Optional[float] = None
     last_line: str = ""
     error: Optional[str] = None
     exit_code: Optional[int] = None
 
     def uptime(self) -> float:
-        return time.time() - self.uptime_start
+        end = self.uptime_stop if self.uptime_stop is not None else time.time()
+        return max(0.0, end - self.uptime_start)
 
 class InstanceRunner:
     def __init__(self, python_exe: str, root: str, script: str, name: str, device: str, config: str, extra_args: list[str]):
@@ -252,6 +254,8 @@ def main():
                                 if st.pid == (runner.proc.pid if runner.proc else None):
                                     st.state = "stopped"
                                     st.last_update = time.time()
+                                    if st.uptime_stop is None:
+                                        st.uptime_stop = st.last_update
                             continue
                         st = states.get(runner.name)
                         if st:
@@ -279,6 +283,8 @@ def main():
                             if st.state != "stopped":
                                 st.state = "stopped"
                                 st.last_update = time.time()
+                            if st.uptime_stop is None:
+                                st.uptime_stop = st.last_update
                 time.sleep(0.1)
                 # Update layout with footer if all stopped and keep_open
                 footer = None
