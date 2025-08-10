@@ -13,9 +13,31 @@ import tempfile
 from PIL import Image
 import matplotlib.pyplot as plt
 
+
 # --- ADB Utility Functions ---
 # Reuse connection for faster commands
 _adb_connection = None
+STATUS_ENABLED = False
+INSTANCE_NAME = None
+
+def emit_status(state, **kwargs):
+    """Emit a single-line, machine-readable status event for dashboard consumption.
+    Prints lines prefixed with __STATUS__ followed by a JSON object. No effect unless --status is enabled.
+    """
+    if not STATUS_ENABLED:
+        return
+    payload = {
+        "ts": time.time(),
+        "name": INSTANCE_NAME or ADB_DEVICE,
+        "device": ADB_DEVICE,
+        "state": state,
+    }
+    payload.update(kwargs or {})
+    try:
+        print(f"__STATUS__ {json.dumps(payload, separators=(',', ':'))}", flush=True)
+    except Exception:
+        # Fallback to avoid breaking main flow if serialization fails
+        pass
 
 def get_adb_connection():
     global _adb_connection
@@ -316,16 +338,20 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
         captcha_diamond_pixel_color = get_pixel_color(screenshot_path, *captcha_diamond["coord"])
 
         if android_home_screen_pixel_color == tuple(android_home_screen_bottom_right["color"]):
+            emit_status("home", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
             adb_tap_fast(*tuple(android_home_screen_growcastle_icon["coord"]))
         elif captcha_diamond_pixel_color == tuple(captcha_diamond["color"]):
             if no_solve_captcha:
+                emit_status("captcha_wait", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
                 time.sleep(1)
                 continue
             captcha_attempt += 1
             if captcha_attempt > captcha_retry_attempts:
                 print(f"Captcha solving failed after {captcha_retry_attempts} attempts. Exiting.")
+                emit_status("captcha_failed", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
                 exit(1)
             print(f"Solving captcha (attempt {captcha_attempt})")
+            emit_status("captcha_solving", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
             
             # Create folder for screenshots
             folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
@@ -401,10 +427,12 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             sleep_quick()
 
             no_battle_count = 0
+            emit_status("captcha_clicked", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count, log_index=log_index)
         elif battle_button_pixel_color == tuple(battle_button["color"]):
             if captcha_attempt > 0:
                 captcha_attempt = 0
                 print("Captcha solved")
+                emit_status("captcha_solved", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
 
             # Battle mode: use abilities
             if abilities:
@@ -419,6 +447,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 pass
 
             no_battle_count = 0
+            emit_status("battle", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
         elif menu_button_pixel_color == tuple(menu_button["color"]):
             if won:
                 print("VICTORY")
@@ -465,6 +494,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")
             no_battle_count = 0
+            emit_status("menu", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
         else:
             win_panel_pixel_color = get_pixel_color(screenshot_path, *win_panel["coord"])
             if win_panel_pixel_color == tuple(win_panel["color"]):
@@ -472,6 +502,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             
             no_battle_count += 1
             print(f"No battle mode detected, waiting... (count: {no_battle_count})")
+            emit_status("idle", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
             
             if no_battle_count >= 5:
                 if no_battle_count%2 == 0:
@@ -503,23 +534,43 @@ if __name__ == "__main__":
                        help='ADB device serial (default: 127.0.0.1:5555)')
     parser.add_argument('--config', type=str, default='config.json',
                        help='Config file with data from setup (default: config.json)')
+    parser.add_argument('--status', action='store_true',
+                        help='Emit machine-readable status lines for dashboards (__STATUS__ JSON)')
+    parser.add_argument('--name', type=str, default=None,
+                        help='Optional friendly name for this instance (defaults to adb device)')
     args = parser.parse_args()
 
-    global ADB_DEVICE
     ADB_DEVICE = args.adb_device
-    global CONFIG_PATH
     CONFIG_PATH = args.config
+    STATUS_ENABLED = bool(args.status)
+    INSTANCE_NAME = args.name or args.adb_device
 
     # Wait for ADB device to be ready
     print("Connecting...")
+    emit_status("connecting")
     adb_device_running = False
     while not adb_device_running:
-        adb_connect = subprocess.run(["adb", "connect", ADB_DEVICE], capture_output=True, text=True)
-        output = adb_connect.stdout.strip()
+        try:
+            adb_connect = subprocess.run(["adb", "connect", ADB_DEVICE], capture_output=True, text=True)
+        except FileNotFoundError:
+            msg = "adb executable not found in PATH. Install platform-tools or add adb to PATH."
+            print(msg)
+            emit_status("error", message=msg)
+            time.sleep(2)
+            continue
+
+        output = (adb_connect.stdout or "").strip()
         if "connected" in output:
             adb_device_running = True
             print(output)
+            emit_status("connected")
         else:
+            # Keep retrying; emit connecting or error messages as appropriate
+            if output:
+                print(output)
+                emit_status("connecting", message=output)
+            else:
+                emit_status("connecting")
             time.sleep(1)
 
     if args.setup:
@@ -527,4 +578,8 @@ if __name__ == "__main__":
     elif args.setup_add:
         setup_config(add_mode=True)
 
-    main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha, captcha_retry_attempts=args.captcha_retry_attempts)
+    try:
+        main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha, captcha_retry_attempts=args.captcha_retry_attempts)
+    except KeyboardInterrupt:
+        emit_status("stopped")
+        raise

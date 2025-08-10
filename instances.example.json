@@ -1,0 +1,9 @@
+{
+  "python": ".venv/Scripts/python.exe",
+  "script": "growcastle.py",
+  "instances": [
+    { "name": "acc-01", "device": "127.0.0.1:5555", "config": "config.json" },
+    { "name": "acc-02", "device": "127.0.0.1:5556", "config": "config.json" },
+    { "name": "acc-03", "device": "127.0.0.1:5557", "config": "config.json" }
+  ]
+}
