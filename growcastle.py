@@ -104,9 +104,6 @@ def show_screenshot_and_get_click(img_path, prompt):
         return None
 
 
-# Config file path
-CONFIG_PATH = "config.json"
-
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         print(f"Config file '{CONFIG_PATH}' not found. Please run with --setup to create it.")
@@ -497,10 +494,14 @@ if __name__ == "__main__":
                        help='Add new points to menu_upgrades and abilities')
     parser.add_argument('--adb-device', type=str, default='127.0.0.1:5555',
                        help='ADB device serial (default: 127.0.0.1:5555)')
+    parser.add_argument('--config', type=str, default='config.json',
+                       help='Config file with data from setup (default: config.json)')
     args = parser.parse_args()
 
     global ADB_DEVICE
     ADB_DEVICE = args.adb_device
+    global CONFIG_PATH
+    CONFIG_PATH = args.config
 
     if args.setup:
         setup_config()
