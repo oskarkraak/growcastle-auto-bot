@@ -441,18 +441,26 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 #print(f"DEBUG: Using ability at {click_pos}")
                 adb_tap_fast(*click_pos)
                 sleep_quick()
-            if is_boss_present():
-                pass  # TODO
-            else:
-                pass
 
             no_battle_count = 0
-            emit_status("battle", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
+            if is_boss_present():
+                emit_status("boss", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
+            else:
+                emit_status("battle", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
+
         elif menu_button_pixel_color == tuple(menu_button["color"]):
             if won:
                 print("VICTORY")
+                try:
+                    emit_status("wave_end", wave=n_wave, outcome="W")
+                except Exception:
+                    pass
             else:
                 print("DEFEAT")
+                try:
+                    emit_status("wave_end", wave=n_wave, outcome="L")
+                except Exception:
+                    pass
             won = False
 
             time.sleep(min(60, random.expovariate(0.5)))

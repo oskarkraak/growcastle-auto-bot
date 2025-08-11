@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from collections import deque
 from typing import Dict, Optional, List
 
 # Third-party: Rich for TUI
@@ -32,6 +33,7 @@ class InstanceState:
     state: str = "starting"
     wave: int = 0
     captcha_attempts: int = 0
+    captchas_done: int = 0
     no_battle: int = 0
     log_index: Optional[int] = None
     last_update: float = field(default_factory=time.time)
@@ -40,6 +42,7 @@ class InstanceState:
     last_line: str = ""
     error: Optional[str] = None
     exit_code: Optional[int] = None
+    last_outcomes: deque = field(default_factory=lambda: deque(maxlen=5))
 
     def uptime(self) -> float:
         end = self.uptime_stop if self.uptime_stop is not None else time.time()
@@ -105,24 +108,24 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
     table = Table(show_header=True, header_style="bold cyan", expand=True)
     table.add_column("#", justify="right", width=3)
     table.add_column("Name", style="bold")
-    table.add_column("Device")
     table.add_column("State")
-    table.add_column("Wave", justify="right")
-    table.add_column("Captcha", justify="right")
-    table.add_column("NoBattle", justify="right")
+    table.add_column("Waves", justify="right")
+    table.add_column("Captchas", justify="right")
+    table.add_column("Idle iterations", justify="right")
     table.add_column("Uptime")
     table.add_column("Last Update")
-    table.add_column("Exit", justify="right")
-    table.add_column("Last")
+    table.add_column("History")
 
     now = time.time()
     for idx, (key, st) in enumerate(sorted(states.items())):
         age = now - st.last_update
-        age_text = f"{age:4.1f}s"
+        age_sec = int(age) if age > 0 else 0
+        age_text = f"{age_sec}s"
         uptime_text = f"{st.uptime():.0f}s"
         state_style = {
             "connected": "green",
             "battle": "bright_green",
+            "boss": "bright_green",
             "menu": "yellow",
             "idle": "grey66",
             "captcha_solving": "magenta",
@@ -130,35 +133,43 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
             "captcha_failed": "red",
             "home": "cyan",
             "connecting": "cyan",
+            "error": "bold red",
             "stopped": "red",
         }.get(st.state, "white")
-        last_msg = (st.last_line or "").strip()
-        if len(last_msg) > 60:
-            last_msg = last_msg[:57] + "..."
-        exit_text = "" if st.exit_code is None else str(st.exit_code)
+        # Build colored last 5 outcomes with fading intensity
+        if st.last_outcomes:
+            segments = []
+            # Display newest on the left, older to the right
+            for j, ch in enumerate(reversed(st.last_outcomes)):
+                # Fade intensity: newest (left) is brightest, older (right) is dimmer
+                intensity = int(255 * (len(st.last_outcomes) - j) / len(st.last_outcomes))
+                color = f"bold rgb(0,{intensity},0)" if ch == 'W' else f"bold rgb({intensity},0,0)"
+                segments.append(Text(ch, style=color))
+            outcome_text = Text.assemble(*segments)
+        else:
+            outcome_text = Text("", style="")
         table.add_row(
             str(idx+1),
             Text(st.name, style="bold white"),
-            st.device,
             Text(st.state, style=state_style),
             str(st.wave),
-            str(st.captcha_attempts),
+            str(st.captchas_done),
             str(st.no_battle),
             uptime_text,
             age_text,
-            exit_text,
-            last_msg,
+            outcome_text,
         )
 
     layout = Layout()
+    total_solved = sum(st.captchas_done for st in states.values()) if states else 0
     if footer:
         layout.split_column(
-            Layout(Panel(table, title="GrowCastle Instances", border_style="blue"), ratio=5),
+            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances", border_style="blue"), ratio=5),
             Layout(Panel(Text(footer), title="Status", border_style="grey50"), ratio=1),
         )
     else:
         layout.split_column(
-            Layout(Panel(table, title="GrowCastle Instances", border_style="blue"), ratio=1),
+            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances", border_style="blue"), ratio=1),
         )
     return layout
 
@@ -262,12 +273,26 @@ def main():
                             st.last_line = line
                             payload = parse_status_line(line)
                             if payload:
-                                st.state = payload.get("state", st.state)
+                                new_state = payload.get("state", st.state)
+                                # Count only on transition into captcha_solved
+                                if new_state == "captcha_solved" and st.state != "captcha_solved":
+                                    st.captchas_done += 1
+                                st.state = new_state
                                 st.wave = int(payload.get("wave", st.wave) or 0)
                                 st.captcha_attempts = int(payload.get("captcha_attempts", st.captcha_attempts) or 0)
                                 st.no_battle = int(payload.get("no_battle", st.no_battle) or 0)
                                 st.log_index = payload.get("log_index", st.log_index)
+                                # Capture an error message if provided
+                                if new_state == "error" and payload.get("message"):
+                                    st.error = str(payload.get("message"))
+                                elif new_state and new_state != "error":
+                                    # Clear previous error when leaving error state
+                                    st.error = None
                                 st.last_update = time.time()
+                                # Track wave outcomes
+                                outcome = payload.get("outcome")
+                                if new_state == "wave_end" and outcome in ("W","L"):
+                                    st.last_outcomes.append(outcome)
                 # Determine if any are still running
                 all_stopped = True
                 for r in runners:
@@ -287,10 +312,17 @@ def main():
                                 st.uptime_stop = st.last_update
                 time.sleep(0.1)
                 # Update layout with footer if all stopped and keep_open
-                footer = None
+                # Compose footer: show errors if any; also show stopped notice if applicable
+                footer_lines = []
+                error_items = [(name, st) for name, st in states.items() if st.state == "error" and st.error]
+                if error_items:
+                    footer_lines.append("Errors:")
+                    for name, st in sorted(error_items):
+                        footer_lines.append(f"- {st.name}: {st.error}")
                 if all_stopped and args.keep_open:
-                    footer = "All instances have stopped. Press Ctrl+C to exit."
+                    footer_lines.append("All instances have stopped. Press Ctrl+C to exit.")
                     running = True  # keep loop alive
+                footer = "\n".join(footer_lines) if footer_lines else None
                 live.update(build_layout(states, footer=footer))
     except KeyboardInterrupt:
         pass
