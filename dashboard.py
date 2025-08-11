@@ -121,7 +121,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
         age = now - st.last_update
         age_sec = int(age) if age > 0 else 0
         age_text = f"{age_sec}s"
-        uptime_text = f"{st.uptime():.0f}s"
+        uptime_text = f"{st.uptime()/60:.0f}min"
         state_style = {
             "connected": "green",
             "battle": "bright_green",
