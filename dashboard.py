@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import random
 from dataclasses import dataclass, field
 from collections import deque
 from typing import Dict, Optional, List
@@ -37,14 +38,17 @@ class InstanceState:
     no_battle: int = 0
     log_index: Optional[int] = None
     last_update: float = field(default_factory=time.time)
-    uptime_start: float = field(default_factory=time.time)
+    uptime_start: Optional[float] = None
     uptime_stop: Optional[float] = None
     last_line: str = ""
     error: Optional[str] = None
     exit_code: Optional[int] = None
     last_outcomes: deque = field(default_factory=lambda: deque(maxlen=5))
+    scheduled_at: Optional[float] = None
 
     def uptime(self) -> float:
+        if self.uptime_start is None:
+            return 0.0
         end = self.uptime_stop if self.uptime_stop is not None else time.time()
         return max(0.0, end - self.uptime_start)
 
@@ -60,6 +64,7 @@ class InstanceRunner:
         self.proc: Optional[subprocess.Popen] = None
         self.thread: Optional[threading.Thread] = None
         self.queue: "queue.Queue[str]" = queue.Queue()
+        self.scheduled_at: Optional[float] = None
 
     def start(self):
         cmd = [self.python_exe, os.path.join(self.root, self.script),
@@ -82,7 +87,7 @@ class InstanceRunner:
 
     def poll(self) -> Optional[int]:
         if self.proc is None:
-            return 0
+            return None
         return self.proc.poll()
 
     def terminate(self):
@@ -115,7 +120,6 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
     table.add_column("Uptime")
     table.add_column("Last Update")
     table.add_column("History")
-
     now = time.time()
     for idx, (key, st) in enumerate(sorted(states.items())):
         age = now - st.last_update
@@ -123,6 +127,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
         age_text = f"{age_sec}s"
         uptime_text = f"{st.uptime()/60:.0f}min"
         state_style = {
+            "scheduled": "cyan",
             "connected": "green",
             "battle": "bright_green",
             "boss": "bright_green",
@@ -136,18 +141,23 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
             "error": "bold red",
             "stopped": "red",
         }.get(st.state, "white")
-        # Build colored last 5 outcomes with fading intensity
-        if st.last_outcomes:
-            segments = []
-            # Display newest on the left, older to the right
-            for j, ch in enumerate(reversed(st.last_outcomes)):
-                # Fade intensity: newest (left) is brightest, older (right) is dimmer
-                intensity = int(255 * (len(st.last_outcomes) - j) / len(st.last_outcomes))
-                color = f"bold rgb(0,{intensity},0)" if ch == 'W' else f"bold rgb({intensity},0,0)"
-                segments.append(Text(ch, style=color))
-            outcome_text = Text.assemble(*segments)
+        # History column: countdown if scheduled, else last 5 outcomes
+        if st.state == "scheduled" and st.scheduled_at:
+            rem = max(0.0, st.scheduled_at - now)
+            mins = rem / 60.0
+            history_text = Text(f"in {mins:.1f}m", style="cyan")
         else:
-            outcome_text = Text("", style="")
+            if st.last_outcomes:
+                segments = []
+                # Display newest on the left, older to the right
+                for j, ch in enumerate(reversed(st.last_outcomes)):
+                    # Fade intensity: newest (left) is brightest, older (right) is dimmer
+                    intensity = int(255 * (len(st.last_outcomes) - j) / len(st.last_outcomes))
+                    color = f"bold rgb(0,{intensity},0)" if ch == 'W' else f"bold rgb({intensity},0,0)"
+                    segments.append(Text(ch, style=color))
+                history_text = Text.assemble(*segments)
+            else:
+                history_text = Text("", style="")
         table.add_row(
             str(idx+1),
             Text(st.name, style="bold white"),
@@ -157,7 +167,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
             str(st.no_battle),
             uptime_text,
             age_text,
-            outcome_text,
+            history_text,
         )
 
     layout = Layout()
@@ -185,6 +195,7 @@ def main():
     parser.add_argument("passthrough", nargs=argparse.REMAINDER, help="Args forwarded to every instance after --")
     parser.add_argument("--no-keep-open", dest="keep_open", action="store_false", help="Exit the dashboard when all instances stop")
     parser.add_argument("--instances", type=str, default="instances.json", help="JSON file listing instances with device and display name (default: instances.json)")
+    parser.add_argument("--stagger-seconds", type=float, default=0.0, help="If > 0, delay each instance start by a truncated-normal sample in [0,T], T=stagger-seconds (mean=T/2, std=T/6)")
     parser.set_defaults(keep_open=True)
 
     args = parser.parse_args()
@@ -214,6 +225,18 @@ def main():
             console.print(f"Failed to read instances file '{cfg_path}': {e}", style="bold red")
             sys.exit(2)
 
+    # Helper: truncated-normal delay in [0, T]
+    def sample_stagger_delay(T: float) -> float:
+        if T <= 0:
+            return 0.0
+        mu = T / 2.0
+        sigma = max(1e-6, T / 6.0)
+        for _ in range(50):
+            d = random.gauss(mu, sigma)
+            if 0.0 <= d <= T:
+                return d
+        return max(0.0, min(T, random.gauss(mu, sigma)))
+
     if data is not None:
         items = data.get("instances", [])
         if not isinstance(items, list):
@@ -230,17 +253,41 @@ def main():
             inst_config = item.get("config") or args.config
             inst_extra = item.get("extra_args") or extra
             runner = InstanceRunner(py, root, script, name, device, inst_config, inst_extra)
-            runner.start()
             runners.append(runner)
-            states[name] = InstanceState(name=name, device=device, pid=runner.proc.pid if runner.proc else None)
+            st = InstanceState(name=name, device=device, pid=None)
+            states[name] = st
+            delay = sample_stagger_delay(float(args.stagger_seconds)) if args.stagger_seconds else 0.0
+            if delay > 0:
+                runner.scheduled_at = time.time() + delay
+                st.state = "scheduled"
+                st.last_update = time.time()
+                st.scheduled_at = runner.scheduled_at
+            else:
+                runner.start()
+                st.pid = runner.proc.pid if runner.proc else None
+                st.state = "starting"
+                st.scheduled_at = None
+                st.uptime_start = time.time()
     elif args.devices:
         # Fallback to devices provided via CLI
         for i, device in enumerate(args.devices):
             name = f"{args.name_prefix}-{i+1:02d}"
             runner = InstanceRunner(args.python, root, args.script, name, device, args.config, extra)
-            runner.start()
             runners.append(runner)
-            states[name] = InstanceState(name=name, device=device, pid=runner.proc.pid if runner.proc else None)
+            st = InstanceState(name=name, device=device, pid=None)
+            states[name] = st
+            delay = sample_stagger_delay(float(args.stagger_seconds)) if args.stagger_seconds else 0.0
+            if delay > 0:
+                runner.scheduled_at = time.time() + delay
+                st.state = "scheduled"
+                st.last_update = time.time()
+                st.scheduled_at = runner.scheduled_at
+            else:
+                runner.start()
+                st.pid = runner.proc.pid if runner.proc else None
+                st.state = "starting"
+                st.scheduled_at = None
+                st.uptime_start = time.time()
     else:
         console.print("No instances started. Provide --devices or an instances file (default: instances.json).", style="bold red")
         sys.exit(2)
@@ -251,6 +298,20 @@ def main():
             running = True
             while running:
                 running = False
+
+                # Start any runners whose schedule has arrived
+                now_ts = time.time()
+                for runner in runners:
+                    if runner.proc is None and runner.scheduled_at and now_ts >= runner.scheduled_at:
+                        st = states.get(runner.name)
+                        runner.start()
+                        if st:
+                            st.pid = runner.proc.pid if runner.proc else None
+                            st.state = "starting"
+                            st.last_update = time.time()
+                            st.scheduled_at = None
+                            st.uptime_start = time.time()
+
                 # Consume output without blocking too long
                 for runner in runners:
                     while True:
@@ -260,7 +321,6 @@ def main():
                             break
                         if line == "__PROCESS_EXIT__":
                             # mark as stopped
-                            # find state by name
                             for st in states.values():
                                 if st.pid == (runner.proc.pid if runner.proc else None):
                                     st.state = "stopped"
@@ -293,17 +353,22 @@ def main():
                                 outcome = payload.get("outcome")
                                 if new_state == "wave_end" and outcome in ("W","L"):
                                     st.last_outcomes.append(outcome)
+
                 # Determine if any are still running
                 all_stopped = True
                 for r in runners:
                     code = r.poll()
-                    if code is None:
+                    if code is None and (r.proc is not None or r.scheduled_at is not None):
+                        running = True
+                        all_stopped = False
+                    elif code is None and r.proc is None and r.scheduled_at is None:
+                        # should not happen, but don't consider stopped
                         running = True
                         all_stopped = False
                     else:
                         # record exit codes
                         st = states.get(r.name)
-                        if st:
+                        if st and r.proc is not None:
                             st.exit_code = code
                             if st.state != "stopped":
                                 st.state = "stopped"
@@ -311,8 +376,8 @@ def main():
                             if st.uptime_stop is None:
                                 st.uptime_stop = st.last_update
                 time.sleep(0.1)
+
                 # Update layout with footer if all stopped and keep_open
-                # Compose footer: show errors if any; also show stopped notice if applicable
                 footer_lines = []
                 error_items = [(name, st) for name, st in states.items() if st.state == "error" and st.error]
                 if error_items:
