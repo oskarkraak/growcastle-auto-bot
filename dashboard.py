@@ -45,6 +45,7 @@ class InstanceState:
     exit_code: Optional[int] = None
     last_outcomes: deque = field(default_factory=lambda: deque(maxlen=5))
     scheduled_at: Optional[float] = None
+    stop_scheduled_at: Optional[float] = None
 
     def uptime(self) -> float:
         if self.uptime_start is None:
@@ -65,15 +66,31 @@ class InstanceRunner:
         self.thread: Optional[threading.Thread] = None
         self.queue: "queue.Queue[str]" = queue.Queue()
         self.scheduled_at: Optional[float] = None
+        self.stop_scheduled_at: Optional[float] = None
 
     def start(self):
         cmd = [self.python_exe, os.path.join(self.root, self.script),
                "--adb-device", self.device,
                "--config", self.config,
                "--status",
-               "--name", self.name]
+               "--name", self.name,
+               "--ignore-sigint"]
         cmd += self.extra_args
-        self.proc = subprocess.Popen(cmd, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+        creationflags = 0
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        # On POSIX, start_new_session isolates the child from our signal group
+        self.proc = subprocess.Popen(
+            cmd,
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            creationflags=creationflags,
+            start_new_session=(os.name != "nt")
+        )
 
         def reader():
             assert self.proc and self.proc.stdout
@@ -195,7 +212,8 @@ def main():
     parser.add_argument("passthrough", nargs=argparse.REMAINDER, help="Args forwarded to every instance after --")
     parser.add_argument("--no-keep-open", dest="keep_open", action="store_false", help="Exit the dashboard when all instances stop")
     parser.add_argument("--instances", type=str, default="instances.json", help="JSON file listing instances with device and display name (default: instances.json)")
-    parser.add_argument("--stagger-seconds", type=float, default=0.0, help="If > 0, delay each instance start by a truncated-normal sample in [0,T], T=stagger-seconds (mean=T/2, std=T/6)")
+    parser.add_argument("--stagger-seconds", type=float, default=0.0, help="If > 0, delay each instance start by a truncated-normal sample in [0,T], T=stagger-seconds (mean=T/2, std=T/2)")
+    parser.add_argument("--stagger-stop-seconds", type=float, default=0.0, help="If > 0, on Ctrl+C stop instances with delays sampled in [0,T], T=stagger-stop-seconds (mean=T/2, std=T/2)")
     parser.set_defaults(keep_open=True)
 
     args = parser.parse_args()
@@ -296,101 +314,125 @@ def main():
     try:
         with Live(build_layout(states), console=console, refresh_per_second=4, screen=True, transient=False) as live:
             running = True
+            stopping_mode = False
             while running:
-                running = False
+                try:
+                    running = False
 
-                # Start any runners whose schedule has arrived
-                now_ts = time.time()
-                for runner in runners:
-                    if runner.proc is None and runner.scheduled_at and now_ts >= runner.scheduled_at:
-                        st = states.get(runner.name)
-                        runner.start()
-                        if st:
-                            st.pid = runner.proc.pid if runner.proc else None
-                            st.state = "starting"
-                            st.last_update = time.time()
-                            st.scheduled_at = None
-                            st.uptime_start = time.time()
+                    # Start any runners whose schedule has arrived
+                    now_ts = time.time()
+                    for runner in runners:
+                        if runner.proc is None and runner.scheduled_at and now_ts >= runner.scheduled_at:
+                            st = states.get(runner.name)
+                            runner.start()
+                            if st:
+                                st.pid = runner.proc.pid if runner.proc else None
+                                st.state = "starting"
+                                st.last_update = time.time()
+                                st.scheduled_at = None
+                                st.uptime_start = time.time()
 
-                # Consume output without blocking too long
-                for runner in runners:
-                    while True:
-                        try:
-                            line = runner.queue.get_nowait()
-                        except queue.Empty:
-                            break
-                        if line == "__PROCESS_EXIT__":
-                            # mark as stopped
-                            for st in states.values():
-                                if st.pid == (runner.proc.pid if runner.proc else None):
+                    # If in stopping mode, terminate those whose stop time has arrived
+                    if stopping_mode and args.stagger_stop_seconds and args.stagger_stop_seconds > 0:
+                        now_ts = time.time()
+                        for r in runners:
+                            st = states.get(r.name)
+                            if st and st.stop_scheduled_at and now_ts >= st.stop_scheduled_at:
+                                r.terminate()
+                                st.stop_scheduled_at = None
+
+                    # Consume output without blocking too long
+                    for runner in runners:
+                        while True:
+                            try:
+                                line = runner.queue.get_nowait()
+                            except queue.Empty:
+                                break
+                            if line == "__PROCESS_EXIT__":
+                                # mark as stopped
+                                for st in states.values():
+                                    if st.pid == (runner.proc.pid if runner.proc else None):
+                                        st.state = "stopped"
+                                        st.last_update = time.time()
+                                        if st.uptime_stop is None:
+                                            st.uptime_stop = st.last_update
+                                continue
+                            st = states.get(runner.name)
+                            if st:
+                                st.last_line = line
+                                payload = parse_status_line(line)
+                                if payload:
+                                    new_state = payload.get("state", st.state)
+                                    # Count only on transition into captcha_solved
+                                    if new_state == "captcha_solved" and st.state != "captcha_solved":
+                                        st.captchas_done += 1
+                                    st.state = new_state
+                                    st.wave = int(payload.get("wave", st.wave) or 0)
+                                    st.captcha_attempts = int(payload.get("captcha_attempts", st.captcha_attempts) or 0)
+                                    st.no_battle = int(payload.get("no_battle", st.no_battle) or 0)
+                                    st.log_index = payload.get("log_index", st.log_index)
+                                    # Capture an error message if provided
+                                    if new_state == "error" and payload.get("message"):
+                                        st.error = str(payload.get("message"))
+                                    elif new_state and new_state != "error":
+                                        # Clear previous error when leaving error state
+                                        st.error = None
+                                    st.last_update = time.time()
+                                    # Track wave outcomes
+                                    outcome = payload.get("outcome")
+                                    if new_state == "wave_end" and outcome in ("W","L"):
+                                        st.last_outcomes.append(outcome)
+
+                    # Determine if any are still running
+                    all_stopped = True
+                    for r in runners:
+                        code = r.poll()
+                        if code is None and (r.proc is not None or r.scheduled_at is not None):
+                            running = True
+                            all_stopped = False
+                        elif code is None and r.proc is None and r.scheduled_at is None:
+                            # should not happen, but don't consider stopped
+                            running = True
+                            all_stopped = False
+                        else:
+                            # record exit codes
+                            st = states.get(r.name)
+                            if st and r.proc is not None:
+                                st.exit_code = code
+                                if st.state != "stopped":
                                     st.state = "stopped"
                                     st.last_update = time.time()
-                                    if st.uptime_stop is None:
-                                        st.uptime_stop = st.last_update
-                            continue
-                        st = states.get(runner.name)
-                        if st:
-                            st.last_line = line
-                            payload = parse_status_line(line)
-                            if payload:
-                                new_state = payload.get("state", st.state)
-                                # Count only on transition into captcha_solved
-                                if new_state == "captcha_solved" and st.state != "captcha_solved":
-                                    st.captchas_done += 1
-                                st.state = new_state
-                                st.wave = int(payload.get("wave", st.wave) or 0)
-                                st.captcha_attempts = int(payload.get("captcha_attempts", st.captcha_attempts) or 0)
-                                st.no_battle = int(payload.get("no_battle", st.no_battle) or 0)
-                                st.log_index = payload.get("log_index", st.log_index)
-                                # Capture an error message if provided
-                                if new_state == "error" and payload.get("message"):
-                                    st.error = str(payload.get("message"))
-                                elif new_state and new_state != "error":
-                                    # Clear previous error when leaving error state
-                                    st.error = None
-                                st.last_update = time.time()
-                                # Track wave outcomes
-                                outcome = payload.get("outcome")
-                                if new_state == "wave_end" and outcome in ("W","L"):
-                                    st.last_outcomes.append(outcome)
+                                if st.uptime_stop is None:
+                                    st.uptime_stop = st.last_update
+                    time.sleep(0.1)
 
-                # Determine if any are still running
-                all_stopped = True
-                for r in runners:
-                    code = r.poll()
-                    if code is None and (r.proc is not None or r.scheduled_at is not None):
-                        running = True
-                        all_stopped = False
-                    elif code is None and r.proc is None and r.scheduled_at is None:
-                        # should not happen, but don't consider stopped
-                        running = True
-                        all_stopped = False
+                    # Update layout with footer if all stopped and keep_open
+                    footer_lines = []
+                    error_items = [(name, st) for name, st in states.items() if st.state == "error" and st.error]
+                    if error_items:
+                        footer_lines.append("Errors:")
+                        for name, st in sorted(error_items):
+                            footer_lines.append(f"- {st.name}: {st.error}")
+                    if all_stopped and args.keep_open:
+                        footer_lines.append("All instances have stopped. Press Ctrl+C to exit.")
+                        running = True  # keep loop alive
+                    footer = "\n".join(footer_lines) if footer_lines else None
+                    live.update(build_layout(states, footer=footer))
+                except KeyboardInterrupt:
+                    # First Ctrl+C schedules staggered stops (if enabled); second breaks the loop
+                    if getattr(args, "stagger_stop_seconds", 0.0) and args.stagger_stop_seconds > 0 and not stopping_mode:
+                        T = float(args.stagger_stop_seconds)
+                        now0 = time.time()
+                        for r in runners:
+                            st = states.get(r.name)
+                            if st and st.state not in ("stopped",):
+                                delay = sample_stagger_delay(T)
+                                st.stop_scheduled_at = now0 + delay
+                                st.state = "stopping"
+                        stopping_mode = True
+                        continue
                     else:
-                        # record exit codes
-                        st = states.get(r.name)
-                        if st and r.proc is not None:
-                            st.exit_code = code
-                            if st.state != "stopped":
-                                st.state = "stopped"
-                                st.last_update = time.time()
-                            if st.uptime_stop is None:
-                                st.uptime_stop = st.last_update
-                time.sleep(0.1)
-
-                # Update layout with footer if all stopped and keep_open
-                footer_lines = []
-                error_items = [(name, st) for name, st in states.items() if st.state == "error" and st.error]
-                if error_items:
-                    footer_lines.append("Errors:")
-                    for name, st in sorted(error_items):
-                        footer_lines.append(f"- {st.name}: {st.error}")
-                if all_stopped and args.keep_open:
-                    footer_lines.append("All instances have stopped. Press Ctrl+C to exit.")
-                    running = True  # keep loop alive
-                footer = "\n".join(footer_lines) if footer_lines else None
-                live.update(build_layout(states, footer=footer))
-    except KeyboardInterrupt:
-        pass
+                        break
     finally:
         # Terminate child processes
         for r in runners:

@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from PIL import Image
 import matplotlib.pyplot as plt
+import signal
 
 
 # --- ADB Utility Functions ---
@@ -546,12 +547,20 @@ if __name__ == "__main__":
                         help='Emit machine-readable status lines for dashboards (__STATUS__ JSON)')
     parser.add_argument('--name', type=str, default=None,
                         help='Optional friendly name for this instance (defaults to adb device)')
+    parser.add_argument('--ignore-sigint', action='store_true',
+                        help='Ignore SIGINT (Ctrl+C); useful when managed by a parent dashboard')
     args = parser.parse_args()
 
     ADB_DEVICE = args.adb_device
     CONFIG_PATH = args.config
     STATUS_ENABLED = bool(args.status)
     INSTANCE_NAME = args.name or args.adb_device
+
+    if args.ignore_sigint:
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except Exception:
+            pass
 
     # Wait for ADB device to be ready
     print("Connecting...")
