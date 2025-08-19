@@ -183,20 +183,24 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
         else:
             start_stop_text = Text("-", style="grey50")
 
-            if st.last_outcomes:
-                segments = []
-                # Display newest on the left, older to the right
-                for j, ch in enumerate(reversed(st.last_outcomes)):
-                    # Fade intensity: newest (left) is brightest, older (right) is dimmer
-                    intensity = int(255 * (len(st.last_outcomes) - j) / len(st.last_outcomes))
-                    color = f"bold rgb(0,{intensity},0)" if ch == 'W' else f"bold rgb({intensity},0,0)"
-                    segments.append(Text(ch, style=color))
-                history_text = Text.assemble(*segments)
-            else:
-                history_text = Text("", style="")
+        # History column: last 5 outcomes only (newest on the left, fading to the right)
+        if st.last_outcomes:
+            segments = []
+            for j, ch in enumerate(reversed(st.last_outcomes)):
+                intensity = int(255 * (len(st.last_outcomes) - j) / len(st.last_outcomes))
+                color = f"bold rgb(0,{intensity},0)" if ch == 'W' else f"bold rgb({intensity},0,0)"
+                segments.append(Text(ch, style=color))
+            history_text = Text.assemble(*segments)
+        else:
+            history_text = Text("")
+        row_style = "reverse" if idx == selected_idx else ""
+        name_text = Text(st.name, style="bold white")
+        
+        if st.state == "paused":
+            name_text.append(" (paused)", style="yellow")
         table.add_row(
             str(idx+1),
-            Text(st.name, style="bold white"),
+            name_text,
             Text(st.state, style=state_style),
             str(st.wave),
             str(st.captchas_done),
@@ -205,6 +209,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
             age_text,
             start_stop_text,
             history_text,
+            style=row_style
         )
 
     layout = Layout()
