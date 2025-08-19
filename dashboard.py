@@ -177,6 +177,29 @@ class InstanceRunner:
             except Exception:
                 pass
 
+    def restart(self):
+        """Terminate (if running) and start anew."""
+        # Terminate existing
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    try:
+                        self.proc.kill()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # Reset handles
+        self.proc = None
+        self.queue = queue.Queue()
+        self.thread = None
+        self.scheduled_at = None
+        # Start fresh
+        self.start()
+
 
 def parse_status_line(line: str) -> Optional[dict]:
     if not line.startswith("__STATUS__ "):
@@ -277,14 +300,15 @@ def build_layout(states: Dict[str, InstanceState], selected_idx: int = 0, footer
 
     layout = Layout()
     total_solved = sum(st.captchas_done for st in states.values()) if states else 0
+    help_text = "GrowCastle Auto Bot Instances (↑/↓ select, 'p' pause, 'r' restart)"
     if footer:
         layout.split_column(
-            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances (Use ↑/↓ to select, 'p' to pause/unpause)", border_style="blue"), ratio=5),
+            Layout(Panel(table, title=help_text, border_style="blue"), ratio=5),
             Layout(Panel(Text(footer), title="Status", border_style="grey50"), ratio=1),
         )
     else:
         layout.split_column(
-            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances (Use ↑/↓ to select, 'p' to pause/unpause)", border_style="blue"), ratio=1),
+            Layout(Panel(table, title=help_text, border_style="blue"), ratio=1),
         )
     return layout
 
@@ -321,6 +345,7 @@ def main():
 
     runners: List[InstanceRunner] = []
     states: Dict[str, InstanceState] = {}
+    runners_by_name: Dict[str, InstanceRunner] = {}
 
     # Prepare extra args (combine --extra-args and positional passthrough, strip any leading --)
     extra = list(args.extra_args or [])
@@ -373,6 +398,7 @@ def main():
             runners.append(runner)
             st = InstanceState(name=name, device=device, pid=None)
             states[name] = st
+            runners_by_name[name] = runner
             delay = sample_stagger_delay(float(args.stagger_seconds)) if args.stagger_seconds else 0.0
             if delay > 0:
                 runner.scheduled_at = time.time() + delay
@@ -393,6 +419,7 @@ def main():
             runners.append(runner)
             st = InstanceState(name=name, device=device, pid=None)
             states[name] = st
+            runners_by_name[name] = runner
             delay = sample_stagger_delay(float(args.stagger_seconds)) if args.stagger_seconds else 0.0
             if delay > 0:
                 runner.scheduled_at = time.time() + delay
@@ -507,6 +534,24 @@ def main():
                                 selected_idx = max(0, selected_idx - 1)
                             elif key == 'down':
                                 selected_idx = min(len(instance_keys) - 1, selected_idx + 1)
+                            elif key == 'r':
+                                if 0 <= selected_idx < len(instance_keys):
+                                    inst_name = instance_keys[selected_idx]
+                                    runner = runners_by_name.get(inst_name)
+                                    st = states.get(inst_name)
+                                    if runner and st:
+                                        # Mark state and restart
+                                        st.state = "restarting"
+                                        st.last_update = time.time()
+                                        st.error = None
+                                        st.wave = 0
+                                        st.captcha_attempts = 0
+                                        st.no_battle = 0
+                                        st.uptime_stop = None
+                                        runner.restart()
+                                        st.pid = runner.proc.pid if runner.proc else None
+                                        st.uptime_start = time.time()
+                                        st.state = "starting"
                     # Update instance_keys in case states changed
                     instance_keys = sorted(states.keys())
                     selected_idx = min(selected_idx, len(instance_keys) - 1)
