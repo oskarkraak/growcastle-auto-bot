@@ -22,6 +22,7 @@ _adb_connection = None
 STATUS_ENABLED = False
 INSTANCE_NAME = None
 PAUSED = False
+NO_UPGRADES_ACTIVE = None  # Will be set to initial CLI flag (True/False)
 
 def emit_status(state, **kwargs):
     """Emit a single-line, machine-readable status event for dashboard consumption.
@@ -304,7 +305,7 @@ def is_boss_present():
 
 def check_control_file():
     """Check for pause/unpause command via control file."""
-    global PAUSED
+    global PAUSED, NO_UPGRADES_ACTIVE
     safe_name = "".join(c for c in INSTANCE_NAME if c.isalnum() or c in ('-', '_'))
     control_path = os.path.join(tempfile.gettempdir(), f"growcastle_control_{safe_name}.json")
     if os.path.exists(control_path):
@@ -318,6 +319,10 @@ def check_control_file():
             elif cmd == "unpause" and PAUSED:
                 PAUSED = False
                 emit_status("unpaused")
+            elif cmd == "toggle_no_upgrades":
+                if NO_UPGRADES_ACTIVE is not None:
+                    NO_UPGRADES_ACTIVE = not NO_UPGRADES_ACTIVE
+                    emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
         except Exception:
             pass
         try:
@@ -326,6 +331,11 @@ def check_control_file():
             pass
 
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
+    global NO_UPGRADES_ACTIVE
+    # Initialize runtime flag once
+    if NO_UPGRADES_ACTIVE is None:
+        NO_UPGRADES_ACTIVE = bool(no_upgrades)
+        emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
     config = load_config()
     android_home_screen_bottom_right = config["android_home_screen_bottom_right"]
     android_home_screen_growcastle_icon = config["android_home_screen_growcastle_icon"]
@@ -496,7 +506,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
 
             time.sleep(min(60, random.expovariate(0.5)))
 
-            if not no_upgrades:
+            if not NO_UPGRADES_ACTIVE:
                 upgrade_type = random.choice(["one_click", "menu"])
                 if upgrade_type == "one_click" and one_click_upgrades:
                     target = random.choice(one_click_upgrades)

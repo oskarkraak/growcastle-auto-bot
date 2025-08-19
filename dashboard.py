@@ -109,6 +109,7 @@ class InstanceState:
     last_outcomes: deque = field(default_factory=lambda: deque(maxlen=5))
     scheduled_at: Optional[float] = None
     stop_scheduled_at: Optional[float] = None
+    no_upgrades: bool = False
 
     def uptime(self) -> float:
         if self.uptime_start is None:
@@ -284,6 +285,8 @@ def build_layout(states: Dict[str, InstanceState], selected_idx: int = 0, footer
         
         if st.state == "paused":
             name_text.append(" (paused)", style="yellow")
+        if st.no_upgrades:
+            name_text.append(" [NU]", style="cyan")
         table.add_row(
             str(idx+1),
             name_text,
@@ -300,7 +303,7 @@ def build_layout(states: Dict[str, InstanceState], selected_idx: int = 0, footer
 
     layout = Layout()
     total_solved = sum(st.captchas_done for st in states.values()) if states else 0
-    help_text = "GrowCastle Auto Bot Instances (↑/↓ select, 'p' pause, 'r' restart)"
+    help_text = "GrowCastle Auto Bot Instances (↑/↓ select, 'p' pause, 'r' restart, 'u' toggle upgrades)"
     if footer:
         layout.split_column(
             Layout(Panel(table, title=help_text, border_style="blue"), ratio=5),
@@ -500,6 +503,8 @@ def main():
                                     st.captcha_attempts = int(payload.get("captcha_attempts", st.captcha_attempts) or 0)
                                     st.no_battle = int(payload.get("no_battle", st.no_battle) or 0)
                                     st.log_index = payload.get("log_index", st.log_index)
+                                    if "no_upgrades" in payload:
+                                        st.no_upgrades = bool(payload.get("no_upgrades"))
                                     # Capture an error message if provided
                                     if new_state == "error" and payload.get("message"):
                                         st.error = str(payload.get("message"))
@@ -534,6 +539,10 @@ def main():
                                 selected_idx = max(0, selected_idx - 1)
                             elif key == 'down':
                                 selected_idx = min(len(instance_keys) - 1, selected_idx + 1)
+                            elif key == 'u':
+                                if 0 <= selected_idx < len(instance_keys):
+                                    inst_name = instance_keys[selected_idx]
+                                    send_control_command(inst_name, 'toggle_no_upgrades')
                             elif key == 'r':
                                 if 0 <= selected_idx < len(instance_keys):
                                     inst_name = instance_keys[selected_idx]
