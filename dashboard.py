@@ -10,6 +10,7 @@ import random
 from dataclasses import dataclass, field
 from collections import deque
 from typing import Dict, Optional, List
+import tempfile
 
 # Third-party: Rich for TUI
 try:
@@ -25,6 +26,68 @@ except ImportError:
     sys.exit(1)
 
 console = Console()
+
+# Cross-platform keyboard input normalization
+WINDOWS = False
+try:
+    import msvcrt  # type: ignore
+    WINDOWS = True
+except ImportError:
+    msvcrt = None  # type: ignore
+
+def get_key() -> Optional[str]:
+    """Return a normalized key identifier or None.
+    Normal keys: single character lowercased (e.g. 'p').
+    Special keys: 'UP', 'DOWN', 'LEFT', 'RIGHT', 'ESC'.
+    """
+    if WINDOWS and msvcrt:
+        if not msvcrt.kbhit():  # type: ignore
+            return None
+        ch = msvcrt.getch()  # type: ignore
+        if ch in (b'\x00', b'\xe0'):  # extended key prefix
+            ch2 = msvcrt.getch()  # type: ignore
+            mapping = {
+                b'H': 'up',
+                b'P': 'down',
+                b'K': 'left',
+                b'M': 'right',
+            }
+            return mapping.get(ch2)
+        if ch == b'\x1b':
+            return 'esc'
+        # Try decode ASCII only
+        try:
+            s = ch.decode('ascii')
+            if len(s) == 1 and s.isprintable():
+                return s.lower()
+        except Exception:
+            return None
+        return None
+    else:
+        # POSIX: use termios non-blocking read with select
+        import select, termios, tty
+        fd = sys.stdin.fileno()
+        dr, _, _ = select.select([sys.stdin], [], [], 0)
+        if not dr:
+            return None
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == '\x1b':
+                # Escape or escape sequence
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == '[' and select.select([sys.stdin], [], [], 0)[0]:
+                        ch3 = sys.stdin.read(1)
+                        mapping = {'A': 'up', 'B': 'down', 'C': 'right', 'D': 'left'}
+                        return mapping.get(ch3, 'esc')
+                return 'esc'
+            if ch and ch.isprintable():
+                return ch.lower()
+            return None
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 @dataclass
 class InstanceState:
@@ -125,7 +188,7 @@ def parse_status_line(line: str) -> Optional[dict]:
         return None
 
 
-def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None) -> Layout:
+def build_layout(states: Dict[str, InstanceState], selected_idx: int = 0, footer: Optional[str] = None) -> Layout:
     # Create a table for all instances
     table = Table(show_header=True, header_style="bold cyan", expand=True)
     table.add_column("#", justify="right", width=3)
@@ -216,15 +279,26 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
     total_solved = sum(st.captchas_done for st in states.values()) if states else 0
     if footer:
         layout.split_column(
-            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances", border_style="blue"), ratio=5),
+            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances (Use ↑/↓ to select, 'p' to pause/unpause)", border_style="blue"), ratio=5),
             Layout(Panel(Text(footer), title="Status", border_style="grey50"), ratio=1),
         )
     else:
         layout.split_column(
-            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances", border_style="blue"), ratio=1),
+            Layout(Panel(table, title=f"GrowCastle Auto Bot Instances (Use ↑/↓ to select, 'p' to pause/unpause)", border_style="blue"), ratio=1),
         )
     return layout
 
+
+def send_control_command(instance_name: str, command: str):
+    """Send a control command to the instance via a control file."""
+    # Control file path: tempdir/growcastle_control_{instance_name}.json
+    safe_name = "".join(c for c in instance_name if c.isalnum() or c in ('-', '_'))
+    control_path = os.path.join(tempfile.gettempdir(), f"growcastle_control_{safe_name}.json")
+    try:
+        with open(control_path, "w") as f:
+            json.dump({"command": command, "ts": time.time()}, f)
+    except Exception as e:
+        pass
 
 def main():
     parser = argparse.ArgumentParser(description="Dashboard to run and monitor multiple GrowCastle instances")
@@ -335,15 +409,18 @@ def main():
         console.print("No instances started. Provide --devices or an instances file (default: instances.json).", style="bold red")
         sys.exit(2)
 
-    # Live updating UI
+    # Live updating UI with keyboard selection and pause/unpause
+    selected_idx = 0
+    instance_keys = sorted(states.keys())
     try:
-        with Live(build_layout(states), console=console, refresh_per_second=4, screen=True, transient=False) as live:
-            running = True
+        # Higher refresh rate for more responsive UI
+        with Live(build_layout(states, selected_idx), console=console, refresh_per_second=10, screen=True, transient=False) as live:
             stopping_mode = False
-            while running:
+            last_key_time = 0
+            last_layout_update = 0.0
+            MIN_BG_UPDATE_INTERVAL = 0.5  # seconds between automatic layout refreshes (when no key events)
+            while True:
                 try:
-                    running = False
-
                     # Start any runners whose schedule has arrived
                     now_ts = time.time()
                     for runner in runners:
@@ -408,41 +485,81 @@ def main():
                                     if new_state == "wave_end" and outcome in ("W","L"):
                                         st.last_outcomes.append(outcome)
 
-                    # Determine if any are still running
-                    all_stopped = True
+                    # Keyboard input for selection and pause/unpause (process all buffered keys)
+                    key_event = False
+                    if sys.stdin.isatty():
+                        # Attempt to drain multiple pending keys (bounded)
+                        for _ in range(10):
+                            key = get_key()
+                            if not key:
+                                break
+                            key_event = True
+                            last_key_time = time.time()
+                            if key == 'esc':
+                                raise KeyboardInterrupt  # unified exit path
+                            elif key == 'p':
+                                if 0 <= selected_idx < len(instance_keys):
+                                    inst_name = instance_keys[selected_idx]
+                                    st = states.get(inst_name)
+                                    if st:
+                                        send_control_command(inst_name, 'unpause' if st.state == 'paused' else 'pause')
+                            elif key == 'up':
+                                selected_idx = max(0, selected_idx - 1)
+                            elif key == 'down':
+                                selected_idx = min(len(instance_keys) - 1, selected_idx + 1)
+                    # Update instance_keys in case states changed
+                    instance_keys = sorted(states.keys())
+                    selected_idx = min(selected_idx, len(instance_keys) - 1)
+
+                    # Determine if any are still running (process perspective)
+                    all_stopped_process = True
                     for r in runners:
                         code = r.poll()
                         if code is None and (r.proc is not None or r.scheduled_at is not None):
-                            running = True
-                            all_stopped = False
+                            all_stopped_process = False
                         elif code is None and r.proc is None and r.scheduled_at is None:
-                            # should not happen, but don't consider stopped
-                            running = True
-                            all_stopped = False
+                            # Not started yet or missing schedule; treat as not stopped
+                            all_stopped_process = False
                         else:
-                            # record exit codes
-                            st = states.get(r.name)
-                            if st and r.proc is not None:
-                                st.exit_code = code
-                                if st.state != "stopped":
-                                    st.state = "stopped"
-                                    st.last_update = time.time()
-                                if st.uptime_stop is None:
-                                    st.uptime_stop = st.last_update
-                    time.sleep(0.1)
+                            # Process finished; record exit
+                            st_ref = states.get(r.name)
+                            if st_ref and r.proc is not None:
+                                st_ref.exit_code = code
+                                if st_ref.state != "stopped":
+                                    st_ref.state = "stopped"
+                                    st_ref.last_update = time.time()
+                                if st_ref.uptime_stop is None:
+                                    st_ref.uptime_stop = st_ref.last_update
+                    # UI-level all stopped means every state == 'stopped'
+                    all_stopped_ui = all(st.state == 'stopped' for st in states.values()) and len(states) > 0
+                    # Decide whether to update layout now
+                    now_loop = time.time()
+                    need_update = False
+                    if key_event:
+                        need_update = True  # immediate feedback
+                    elif (now_loop - last_layout_update) >= MIN_BG_UPDATE_INTERVAL:
+                        need_update = True
 
-                    # Update layout with footer if all stopped and keep_open
-                    footer_lines = []
-                    error_items = [(name, st) for name, st in states.items() if st.state == "error" and st.error]
-                    if error_items:
-                        footer_lines.append("Errors:")
-                        for name, st in sorted(error_items):
-                            footer_lines.append(f"- {st.name}: {st.error}")
-                    if all_stopped and args.keep_open:
-                        footer_lines.append("All instances have stopped. Press Ctrl+C to exit.")
-                        running = True  # keep loop alive
-                    footer = "\n".join(footer_lines) if footer_lines else None
-                    live.update(build_layout(states, footer=footer))
+                    if need_update:
+                        # Update layout with footer if all stopped and keep_open
+                        footer_lines = []
+                        error_items = [(name, st) for name, st in states.items() if st.state == "error" and st.error]
+                        if error_items:
+                            footer_lines.append("Errors:")
+                            for name, st in sorted(error_items):
+                                footer_lines.append(f"- {st.name}: {st.error}")
+                        if all_stopped_ui and args.keep_open:
+                            footer_lines.append("All instances have stopped. Press Ctrl+C to exit.")
+                        footer = "\n".join(footer_lines) if footer_lines else None
+                        live.update(build_layout(states, selected_idx, footer=footer))
+                        last_layout_update = now_loop
+
+                    # Short sleep to prevent tight loop CPU spin
+                    time.sleep(0.05)
+
+                    # Exit if all stopped and we are not keeping open
+                    if all_stopped_ui and not args.keep_open:
+                        break
                 except KeyboardInterrupt:
                     # First Ctrl+C schedules staggered stops (if enabled); second breaks the loop
                     if getattr(args, "stagger_stop_seconds", 0.0) and args.stagger_stop_seconds > 0 and not stopping_mode:

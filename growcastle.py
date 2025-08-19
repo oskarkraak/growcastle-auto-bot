@@ -13,6 +13,7 @@ import tempfile
 from PIL import Image
 import matplotlib.pyplot as plt
 import signal
+import threading
 
 
 # --- ADB Utility Functions ---
@@ -20,6 +21,7 @@ import signal
 _adb_connection = None
 STATUS_ENABLED = False
 INSTANCE_NAME = None
+PAUSED = False
 
 def emit_status(state, **kwargs):
     """Emit a single-line, machine-readable status event for dashboard consumption.
@@ -300,6 +302,29 @@ def is_boss_present():
 
 
 
+def check_control_file():
+    """Check for pause/unpause command via control file."""
+    global PAUSED
+    safe_name = "".join(c for c in INSTANCE_NAME if c.isalnum() or c in ('-', '_'))
+    control_path = os.path.join(tempfile.gettempdir(), f"growcastle_control_{safe_name}.json")
+    if os.path.exists(control_path):
+        try:
+            with open(control_path, "r") as f:
+                data = json.load(f)
+            cmd = data.get("command")
+            if cmd == "pause" and not PAUSED:
+                PAUSED = True
+                emit_status("paused")
+            elif cmd == "unpause" and PAUSED:
+                PAUSED = False
+                emit_status("unpaused")
+        except Exception:
+            pass
+        try:
+            os.remove(control_path)
+        except Exception:
+            pass
+
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     config = load_config()
     android_home_screen_bottom_right = config["android_home_screen_bottom_right"]
@@ -329,6 +354,11 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
     screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_loop_{safe_device}.png")
     while True:
+        check_control_file()
+        if PAUSED:
+            emit_status("paused")
+            time.sleep(0.5)
+            continue
         start_time = time.time()
         adb_screenshot(screenshot_path)
         elapsed_time = time.time() - start_time
