@@ -136,6 +136,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
     table.add_column("Idle iterations", justify="right")
     table.add_column("Uptime")
     table.add_column("Last Update")
+    table.add_column("Start/Stop")
     table.add_column("History")
     now = time.time()
     for idx, (key, st) in enumerate(sorted(states.items())):
@@ -145,6 +146,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
         uptime_text = f"{st.uptime()/60:.0f}min"
         state_style = {
             "scheduled": "cyan",
+            "stopping": "yellow",
             "connected": "green",
             "battle": "bright_green",
             "boss": "bright_green",
@@ -158,12 +160,29 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
             "error": "bold red",
             "stopped": "red",
         }.get(st.state, "white")
-        # History column: countdown if scheduled, else last 5 outcomes
-        if st.state == "scheduled" and st.scheduled_at:
+        # Start/Stop column: show only the most recent of:
+        # (1) start in, (2) started at, (3) stop in, (4) stopped at
+        def _fmt_time(ts: Optional[float]) -> str:
+            return time.strftime("%H:%M", time.localtime(ts)) if ts else "-"
+
+        # Priority order (most recent):
+        # 1) stopped at (if stopped)
+        # 2) stop in (if a stop is scheduled)
+        # 3) started at (if started)
+        # 4) start in (if a start is scheduled)
+        if st.uptime_stop:
+            start_stop_text = Text(f"stopped {_fmt_time(st.uptime_stop)}", style="grey70")
+        elif st.stop_scheduled_at and st.stop_scheduled_at > now:
+            rem2 = max(0.0, st.stop_scheduled_at - now)
+            start_stop_text = Text(f"stop in {rem2/60.0:.1f}m", style="red")
+        elif st.uptime_start:
+            start_stop_text = Text(f"started {_fmt_time(st.uptime_start)}", style="green")
+        elif st.scheduled_at and st.scheduled_at > now:
             rem = max(0.0, st.scheduled_at - now)
-            mins = rem / 60.0
-            history_text = Text(f"in {mins:.1f}m", style="cyan")
+            start_stop_text = Text(f"start in {rem/60.0:.1f}m", style="cyan")
         else:
+            start_stop_text = Text("-", style="grey50")
+
             if st.last_outcomes:
                 segments = []
                 # Display newest on the left, older to the right
@@ -184,6 +203,7 @@ def build_layout(states: Dict[str, InstanceState], footer: Optional[str] = None)
             str(st.no_battle),
             uptime_text,
             age_text,
+            start_stop_text,
             history_text,
         )
 
