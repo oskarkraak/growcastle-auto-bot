@@ -11,6 +11,18 @@ from dataclasses import dataclass, field
 from collections import deque
 from typing import Dict, Optional, List
 import tempfile
+from datetime import datetime, timedelta
+
+# ==== Autobattle Scheduling Constants (adjust for testing) ====
+# Local time windows.
+# AUTOBATTLE_ON_WINDOW: (start_hour, start_minute), (end_hour, end_minute) -- ON sometime within this window.
+# AUTOBATTLE_OFF_WINDOW: (start_hour, start_minute), (end_hour, end_minute) -- OFF sometime within this window.
+# Change these to small upcoming windows while testing (e.g., next few minutes) then revert.
+AUTOBATTLE_ON_WINDOW = ((23, 0), (23, 59))
+AUTOBATTLE_OFF_WINDOW = ((5, 50), (6, 5))
+
+# If True, will log scheduling decisions in scheduling_note (already shown internally, can surface if desired)
+AUTOBATTLE_VERBOSE_SCHED = True
 
 # Third-party: Rich for TUI
 try:
@@ -111,6 +123,10 @@ class InstanceState:
     stop_scheduled_at: Optional[float] = None
     no_upgrades: bool = False
     autobattle: bool = False  # Reflects AUTO_BATTLE_ENABLED
+    next_autobattle_on: Optional[float] = None  # epoch seconds
+    next_autobattle_off: Optional[float] = None  # epoch seconds
+    scheduling_note: str = ""  # brief last scheduling action
+    autobattle_span_started: bool = False  # whether current ON->OFF span already activated
 
     def uptime(self) -> float:
         if self.uptime_start is None:
@@ -353,6 +369,148 @@ def main():
     states: Dict[str, InstanceState] = {}
     runners_by_name: Dict[str, InstanceRunner] = {}
 
+    # Helper to compute random time between two today-based times
+    def random_time_between(day: datetime, start_hm: tuple[int,int], end_hm: tuple[int,int]) -> datetime:
+        start = day.replace(hour=start_hm[0], minute=start_hm[1], second=0, microsecond=0)
+        end = day.replace(hour=end_hm[0], minute=end_hm[1], second=0, microsecond=0)
+        if end <= start:
+            end += timedelta(days=1)
+        span = (end - start).total_seconds()
+        return start + timedelta(seconds=random.uniform(0, span))
+
+    def schedule_cycle(st: InstanceState, now: float):
+        """Schedule next autobattle on/off times for an instance using configured windows.
+        Desired behavior:
+          - Turn ON at a random time inside ON window.
+          - Turn OFF at a random time inside OFF window.
+          - If program starts after ON window but before OFF window: turn ON immediately (we're in the active span) and still schedule an OFF inside the OFF window.
+          - If program starts after OFF window but before next ON window: remain OFF; schedule next ON in next ON window and corresponding OFF.
+        Assumptions:
+          - ON window and OFF window can be same-day (ON before OFF) OR ON window can be late night and OFF next morning (OFF window < ON window start numerically implying next day). We handle wrap.
+        """
+        now_dt = datetime.fromtimestamp(now)
+        today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Define windows from constants
+        (on_sh, on_sm), (on_eh, on_em) = AUTOBATTLE_ON_WINDOW
+        (off_sh, off_sm), (off_eh, off_em) = AUTOBATTLE_OFF_WINDOW
+        # Build concrete datetimes; allow wrap to next day
+        on_start = today.replace(hour=on_sh, minute=on_sm, second=0, microsecond=0)
+        on_end = today.replace(hour=on_eh, minute=on_em, second=0, microsecond=0)
+        if on_end <= on_start:
+            on_end += timedelta(days=1)  # ON window wraps midnight
+        off_start = today.replace(hour=off_sh, minute=off_sm, second=0, microsecond=0)
+        off_end = today.replace(hour=off_eh, minute=off_em, second=0, microsecond=0)
+        if off_end <= off_start:
+            off_end += timedelta(days=1)  # OFF window wraps
+
+        # Determine where 'now' sits relative to the two windows.
+        in_on_window = on_start <= now_dt < on_end
+        in_off_window = off_start <= now_dt < off_end
+
+        # Helper: random inside given window (assumes start<end within our constructed timeline)
+        def random_in(span_start: datetime, span_end: datetime) -> datetime:
+            total = (span_end - span_start).total_seconds()
+            return span_start + timedelta(seconds=random.uniform(0, total))
+
+        # Case 1: Inside OFF window – must be / become OFF, schedule next ON in upcoming ON window (could be later today or tomorrow)
+        if in_off_window:
+            # We're in OFF window: ensure ON is next ON window occurrence strictly after now
+            base_for_on = today
+            candidate_on_start = on_start
+            candidate_on_end = on_end
+            if now_dt >= candidate_on_end:  # passed today's ON window entirely
+                candidate_on_start += timedelta(days=1)
+                candidate_on_end += timedelta(days=1)
+            elif now_dt >= candidate_on_start:  # we are after the start but before its end (but inside OFF window implies overlap or mis-config)
+                # If configuration overlaps OFF & ON, shift ON to next day to avoid immediate reactivation loop.
+                candidate_on_start += timedelta(days=1)
+                candidate_on_end += timedelta(days=1)
+            on_pick = random_in(candidate_on_start, candidate_on_end)
+            st.next_autobattle_on = on_pick.timestamp()
+            st.next_autobattle_off = None  # Will be scheduled after we turn on
+            if AUTOBATTLE_VERBOSE_SCHED:
+                st.scheduling_note = "off_window -> scheduled next ON"
+            return
+
+        # Determine if ON window is conceptually 'previous' (spanning into now) for overnight scenario.
+        # Active span is: from actual ON trigger time until OFF trigger time. If we are after ON window but before OFF window, we should still be ON.
+        after_on_window_before_off = (now_dt >= on_end) and (now_dt < off_start)
+
+        # Case 2: We are between ON end and OFF start (overnight active span)
+        if after_on_window_before_off:
+            if not st.autobattle_span_started:
+                if not st.autobattle and st.next_autobattle_on is None:
+                    st.next_autobattle_on = now  # immediate activation allowed once per span
+                if st.next_autobattle_off is None:
+                    offtime = random_in(off_start, off_end)
+                    st.next_autobattle_off = offtime.timestamp()
+                if AUTOBATTLE_VERBOSE_SCHED:
+                    st.scheduling_note = "between windows -> first span activation"
+            else:
+                # Already activated earlier this span; do not re-activate mid-span.
+                if st.next_autobattle_on is None:
+                    # Schedule next day's ON window
+                    next_on_start = on_start + timedelta(days=1) if now_dt >= on_end else on_start
+                    next_on_end = on_end + timedelta(days=1) if now_dt >= on_end else on_end
+                    on_pick = random_in(next_on_start, next_on_end)
+                    st.next_autobattle_on = on_pick.timestamp()
+                    if AUTOBATTLE_VERBOSE_SCHED:
+                        st.scheduling_note = "between windows -> span done, next day ON"
+            return
+
+        # Case 3: Inside ON window: schedule an ON time inside remaining portion if not already on
+        if in_on_window:
+            if not st.autobattle and st.next_autobattle_on is None:
+                remaining_start = max(now_dt, on_start)
+                on_pick = random_in(remaining_start, on_end)
+                st.next_autobattle_on = on_pick.timestamp()
+            # OFF for upcoming OFF window (which must occur after now; adjust if OFF window lies before ON window numerically)
+            # If OFF window starts before ON window start numerically, it is assumed to be next day relative to an ON inside wrap.
+            if off_start <= on_start and off_start < now_dt:
+                # OFF window considered next day in wrap scenario
+                off_start += timedelta(days=1)
+                off_end += timedelta(days=1)
+            if st.next_autobattle_off is None:
+                offtime = random_in(off_start, off_end)
+                st.next_autobattle_off = offtime.timestamp()
+            if AUTOBATTLE_VERBOSE_SCHED:
+                st.scheduling_note = "in_on_window scheduled"
+            return
+
+        # Case 4: We are before the ON window (daytime leading up): stay OFF, schedule an ON inside the upcoming ON window.
+        before_on_window = now_dt < on_start
+        if before_on_window:
+            on_pick = random_in(on_start, on_end)
+            st.next_autobattle_on = on_pick.timestamp()
+            st.next_autobattle_off = None  # will schedule OFF when we activate or when ON window logic runs
+            if AUTOBATTLE_VERBOSE_SCHED:
+                st.scheduling_note = "before_on_window scheduled ON"
+            return
+
+        # Case 5: Fallback (after OFF window but also after ON window and not between them -> i.e., after OFF window daytime): schedule next day's ON.
+        if now_dt >= off_end:
+            next_on_start = on_start
+            next_on_end = on_end
+            if now_dt >= next_on_end:
+                next_on_start += timedelta(days=1)
+                next_on_end += timedelta(days=1)
+            on_pick = random_in(next_on_start, next_on_end)
+            st.next_autobattle_on = on_pick.timestamp()
+            st.next_autobattle_off = None
+            if AUTOBATTLE_VERBOSE_SCHED:
+                st.scheduling_note = "post_off_daytime scheduled next ON"
+            return
+
+        # Should not reach here; leave untouched
+        if AUTOBATTLE_VERBOSE_SCHED and not st.scheduling_note:
+            st.scheduling_note = "schedule_cycle no-op"
+
+    def maybe_schedule_initial(st: InstanceState):
+        now = time.time()
+        if st.next_autobattle_on is None or st.next_autobattle_off is None:
+            schedule_cycle(st, now)
+
+
     # Prepare extra args (combine --extra-args and positional passthrough, strip any leading --)
     extra = list(args.extra_args or [])
     if extra and extra[0] == "--":
@@ -417,6 +575,7 @@ def main():
                 st.state = "starting"
                 st.scheduled_at = None
                 st.uptime_start = time.time()
+            maybe_schedule_initial(st)
     elif args.devices:
         # Fallback to devices provided via CLI
         for i, device in enumerate(args.devices):
@@ -438,6 +597,7 @@ def main():
                 st.state = "starting"
                 st.scheduled_at = None
                 st.uptime_start = time.time()
+            maybe_schedule_initial(st)
     else:
         console.print("No instances started. Provide --devices or an instances file (default: instances.json).", style="bold red")
         sys.exit(2)
@@ -509,7 +669,13 @@ def main():
                                     if "no_upgrades" in payload:
                                         st.no_upgrades = bool(payload.get("no_upgrades"))
                                     if "autobattle" in payload:
+                                        prev = st.autobattle
                                         st.autobattle = bool(payload.get("autobattle"))
+                                        if st.autobattle and not prev:
+                                            st.autobattle_span_started = True
+                                        elif (not st.autobattle) and prev:
+                                            # Leave span_started True to block mid-span reactivation
+                                            pass
                                     # Capture an error message if provided
                                     if new_state == "error" and payload.get("message"):
                                         st.error = str(payload.get("message"))
@@ -618,6 +784,30 @@ def main():
                         footer = "\n".join(footer_lines) if footer_lines else None
                         live.update(build_layout(states, selected_idx, footer=footer))
                         last_layout_update = now_loop
+
+                    # Autobattle scheduling & triggering (after UI update for responsiveness)
+                    now_sched = time.time()
+                    for name, st in states.items():
+                        # Ensure we have a schedule
+                        # Only schedule/adjust when both empty, or when we need the next phase time.
+                        if (st.next_autobattle_on is None and not st.autobattle) or (st.next_autobattle_off is None and st.autobattle):
+                            schedule_cycle(st, now_sched)
+                        # Trigger ON
+                        if not st.autobattle and st.next_autobattle_on and now_sched >= st.next_autobattle_on:
+                            send_control_command(name, 'autobattle_on')
+                            # Keep off time; clear on time to avoid retrigger
+                            st.scheduling_note = f"sent autobattle_on at {time.strftime('%H:%M:%S')}"
+                            st.next_autobattle_on = None
+                            st.autobattle_span_started = True
+                        # Trigger OFF
+                        if st.autobattle and st.next_autobattle_off and now_sched >= st.next_autobattle_off:
+                            send_control_command(name, 'autobattle_off')
+                            st.scheduling_note = f"sent autobattle_off at {time.strftime('%H:%M:%S')}"
+                            # Prepare next cycle scheduling after off command; will schedule once status clears
+                            st.next_autobattle_off = None
+                        # After OFF executed (status update sets st.autobattle False) and both times None -> schedule next cycle
+                        if (not st.autobattle) and st.next_autobattle_on is None:
+                            schedule_cycle(st, now_sched)
 
                     # Short sleep to prevent tight loop CPU spin
                     time.sleep(0.05)
