@@ -23,6 +23,9 @@ STATUS_ENABLED = False
 INSTANCE_NAME = None
 PAUSED = False
 NO_UPGRADES_ACTIVE = None  # Will be set to initial CLI flag (True/False)
+AUTO_BATTLE_ENABLED = False  # Runtime flag toggled via control file
+PENDING_AUTOBATTLE_EXIT = False  # Set when autobattle turned off to perform exit sequence
+AUTOBATTLE_EXIT_SWIPED = False  # Internal state to ensure swipe performed once
 
 def emit_status(state, **kwargs):
     """Emit a single-line, machine-readable status event for dashboard consumption.
@@ -191,6 +194,14 @@ def setup_config(add_mode=False):
         {"name": "hero_window_close1", "desc": "First hero window close button position (after upgrade)"},
         {"name": "hero_window_close2", "desc": "Second hero window close button position (final close)"},
         {"name": "golden_horn_close", "desc": "Golden horn popup close button position"},
+        {"name": "autobattle_button", "desc": "Autobattle button position (when in wave)"},
+        {"name": "mode_toggle_button", "desc": "Mode toggle button position (in autobattle popup)"},
+        {"name": "autobattle_start_button", "desc": "Autobattle start button position (in autobattle popup)"},
+        {"name": "power_saving_button", "desc": "Power saving button position (when autobattling)"},
+        {"name": "power_saving_screen_exit_swipe_left", "desc": "LEFT point for swipe to exit power saving screen (autobattle off)"},
+        {"name": "power_saving_screen_exit_swipe_right", "desc": "RIGHT point for swipe to exit power saving screen (autobattle off) - rather go too far right than left, it will still work"},
+        {"name": "wave_exit_button_1", "desc": "First wave exit confirmation button (after leaving power saving)"},
+        {"name": "wave_exit_button_2", "desc": "Second wave exit confirmation button"},
     ]
 
     dynamic_points = [
@@ -304,8 +315,8 @@ def is_boss_present():
 
 
 def check_control_file():
-    """Check for pause/unpause command via control file."""
-    global PAUSED, NO_UPGRADES_ACTIVE
+    """Check for pause/unpause and other toggle commands via control file."""
+    global PAUSED, NO_UPGRADES_ACTIVE, AUTO_BATTLE_ENABLED, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED
     safe_name = "".join(c for c in INSTANCE_NAME if c.isalnum() or c in ('-', '_'))
     control_path = os.path.join(tempfile.gettempdir(), f"growcastle_control_{safe_name}.json")
     if os.path.exists(control_path):
@@ -323,6 +334,15 @@ def check_control_file():
                 if NO_UPGRADES_ACTIVE is not None:
                     NO_UPGRADES_ACTIVE = not NO_UPGRADES_ACTIVE
                     emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
+            elif cmd == "autobattle_on" and not AUTO_BATTLE_ENABLED:
+                AUTO_BATTLE_ENABLED = True
+                emit_status("config", autobattle=AUTO_BATTLE_ENABLED)
+            elif cmd == "autobattle_off" and AUTO_BATTLE_ENABLED:
+                AUTO_BATTLE_ENABLED = False
+                # Schedule cleanup sequence
+                PENDING_AUTOBATTLE_EXIT = True
+                AUTOBATTLE_EXIT_SWIPED = False
+                emit_status("config", autobattle=AUTO_BATTLE_ENABLED, pending_autobattle_exit=True)
         except Exception:
             pass
         try:
@@ -331,7 +351,7 @@ def check_control_file():
             pass
 
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
-    global NO_UPGRADES_ACTIVE
+    global NO_UPGRADES_ACTIVE, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED
     # Initialize runtime flag once
     if NO_UPGRADES_ACTIVE is None:
         NO_UPGRADES_ACTIVE = bool(no_upgrades)
@@ -356,6 +376,14 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
     hero_window_close1 = config["hero_window_close1"]
     hero_window_close2 = config["hero_window_close2"]
     golden_horn_close = config["golden_horn_close"]
+    autobattle_button = config.get("autobattle_button")
+    mode_toggle_button = config.get("mode_toggle_button")
+    autobattle_start_button = config.get("autobattle_start_button")
+    power_saving_button = config.get("power_saving_button")
+    power_saving_screen_exit_swipe_left = config.get("power_saving_screen_exit_swipe_left")
+    power_saving_screen_exit_swipe_right = config.get("power_saving_screen_exit_swipe_right")
+    wave_exit_button_1 = config.get("wave_exit_button_1")
+    wave_exit_button_2 = config.get("wave_exit_button_2")
 
     n_wave = 0
     won = False
@@ -377,6 +405,21 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
         battle_button_pixel_color = get_pixel_color(screenshot_path, *battle_button["coord"])
         menu_button_pixel_color = get_pixel_color(screenshot_path, *menu_button["coord"])
         captcha_diamond_pixel_color = get_pixel_color(screenshot_path, *captcha_diamond["coord"])
+
+        # Handle pending autobattle exit swipe (do before other actions so next frame reflects state)
+        if PENDING_AUTOBATTLE_EXIT and not AUTOBATTLE_EXIT_SWIPED:
+            try:
+                x1, y1 = power_saving_screen_exit_swipe_left["coord"]
+                x2, y2 = power_saving_screen_exit_swipe_right["coord"]
+                adb_swipe(x1, y1, x2, y2, duration_ms=random.uniform(400, 550))
+                AUTOBATTLE_EXIT_SWIPED = True
+                emit_status("config", autobattle=False, exit_swipe=True)
+                time.sleep(0.5)
+                continue  # Take a new screenshot after swipe
+            except Exception:
+                # If swipe fails, abandon exit sequence to avoid being stuck
+                PENDING_AUTOBATTLE_EXIT = False
+                AUTOBATTLE_EXIT_SWIPED = False
 
         if android_home_screen_pixel_color == tuple(android_home_screen_bottom_right["color"]):
             emit_status("home", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
@@ -470,6 +513,23 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             no_battle_count = 0
             emit_status("captcha_clicked", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count, log_index=log_index)
         elif battle_button_pixel_color == tuple(battle_button["color"]):
+            # If we just swiped out of power saving, perform wave exit buttons
+            if PENDING_AUTOBATTLE_EXIT and AUTOBATTLE_EXIT_SWIPED:
+                try:
+                    adb_tap_fast(*with_offset(tuple(wave_exit_button_1["coord"])) )
+                    sleep_quick()
+                    adb_tap_fast(*with_offset(tuple(wave_exit_button_2["coord"])) )
+                    sleep_quick()
+                    PENDING_AUTOBATTLE_EXIT = False
+                    AUTOBATTLE_EXIT_SWIPED = False
+                    emit_status("config", autobattle=False, autobattle_exit_complete=True)
+                    # After exiting wave, skip ability usage this loop
+                    time.sleep(0.5)
+                    continue
+                except Exception:
+                    # Failure—reset flags to avoid infinite attempts
+                    PENDING_AUTOBATTLE_EXIT = False
+                    AUTOBATTLE_EXIT_SWIPED = False
             if captcha_attempt > 0:
                 captcha_attempt = 0
                 print("Captcha solved")
@@ -535,10 +595,21 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             adb_tap_fast(*switch_pos)
             time.sleep(random.uniform(0.5, 1))
 
-            adb_tap_fast(*with_offset(tuple(close_popup["coord"])))
-            sleep_quick()
-            adb_tap_fast(*with_offset(tuple(military_band_f["coord"])))
-            sleep_quick()
+            # Wave start sequence: standard or autobattle
+            if AUTO_BATTLE_ENABLED:
+                adb_tap_fast(*with_offset(tuple(autobattle_button["coord"])) )
+                sleep_quick()
+                adb_tap_fast(*with_offset(tuple(mode_toggle_button["coord"])) )
+                sleep_quick()
+                adb_tap_fast(*with_offset(tuple(autobattle_start_button["coord"])) )
+                sleep_quick()
+                adb_tap_fast(*with_offset(tuple(power_saving_button["coord"])) )
+                sleep_quick()
+            else:
+                adb_tap_fast(*with_offset(tuple(close_popup["coord"])) )
+                sleep_quick()
+                adb_tap_fast(*with_offset(tuple(military_band_f["coord"])) )
+                sleep_quick()
 
             n_wave = n_wave + 1
             print("Wave " + str(n_wave) + " started")

@@ -110,6 +110,7 @@ class InstanceState:
     scheduled_at: Optional[float] = None
     stop_scheduled_at: Optional[float] = None
     no_upgrades: bool = False
+    autobattle: bool = False  # Reflects AUTO_BATTLE_ENABLED
 
     def uptime(self) -> float:
         if self.uptime_start is None:
@@ -287,6 +288,8 @@ def build_layout(states: Dict[str, InstanceState], selected_idx: int = 0, footer
             name_text.append(" (paused)", style="yellow")
         if st.no_upgrades:
             name_text.append(" [NU]", style="cyan")
+        if st.autobattle:
+            name_text.append(" [AB]", style="magenta")
         table.add_row(
             str(idx+1),
             name_text,
@@ -303,7 +306,7 @@ def build_layout(states: Dict[str, InstanceState], selected_idx: int = 0, footer
 
     layout = Layout()
     total_solved = sum(st.captchas_done for st in states.values()) if states else 0
-    help_text = "GrowCastle Auto Bot Instances (↑/↓ select, 'p' pause, 'r' restart, 'u' toggle upgrades)"
+    help_text = "GrowCastle Auto Bot Instances (↑/↓ select, 'p' pause, 'r' restart, 'u' toggle upgrades, 'a' toggle autobattle)"
     if footer:
         layout.split_column(
             Layout(Panel(table, title=help_text, border_style="blue"), ratio=5),
@@ -505,6 +508,8 @@ def main():
                                     st.log_index = payload.get("log_index", st.log_index)
                                     if "no_upgrades" in payload:
                                         st.no_upgrades = bool(payload.get("no_upgrades"))
+                                    if "autobattle" in payload:
+                                        st.autobattle = bool(payload.get("autobattle"))
                                     # Capture an error message if provided
                                     if new_state == "error" and payload.get("message"):
                                         st.error = str(payload.get("message"))
@@ -561,6 +566,12 @@ def main():
                                         st.pid = runner.proc.pid if runner.proc else None
                                         st.uptime_start = time.time()
                                         st.state = "starting"
+                            elif key == 'a':
+                                if 0 <= selected_idx < len(instance_keys):
+                                    inst_name = instance_keys[selected_idx]
+                                    st = states.get(inst_name)
+                                    if st:
+                                        send_control_command(inst_name, 'autobattle_off' if st.autobattle else 'autobattle_on')
                     # Update instance_keys in case states changed
                     instance_keys = sorted(states.keys())
                     selected_idx = min(selected_idx, len(instance_keys) - 1)
