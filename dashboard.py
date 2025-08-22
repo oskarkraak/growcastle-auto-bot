@@ -71,7 +71,7 @@ def get_key() -> Optional[str]:
         try:
             s = ch.decode('ascii')
             if len(s) == 1 and s.isprintable():
-                return s.lower()
+                return s
         except Exception:
             return None
         return None
@@ -96,7 +96,7 @@ def get_key() -> Optional[str]:
                         return mapping.get(ch3, 'esc')
                 return 'esc'
             if ch and ch.isprintable():
-                return ch.lower()
+                return ch
             return None
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -698,46 +698,76 @@ def main():
                                 break
                             key_event = True
                             last_key_time = time.time()
-                            if key == 'esc':
+                            key_lower = key.lower() if len(key) == 1 else key
+                            if key_lower == 'esc':
                                 raise KeyboardInterrupt  # unified exit path
-                            elif key == 'p':
-                                if 0 <= selected_idx < len(instance_keys):
-                                    inst_name = instance_keys[selected_idx]
-                                    st = states.get(inst_name)
-                                    if st:
-                                        send_control_command(inst_name, 'unpause' if st.state == 'paused' else 'pause')
-                            elif key == 'up':
+                            elif key_lower == 'p':
+                                if key.isupper():  # apply to all
+                                    for inst_name, st_all in states.items():
+                                        send_control_command(inst_name, 'unpause' if st_all.state == 'paused' else 'pause')
+                                else:
+                                    if 0 <= selected_idx < len(instance_keys):
+                                        inst_name = instance_keys[selected_idx]
+                                        st = states.get(inst_name)
+                                        if st:
+                                            send_control_command(inst_name, 'unpause' if st.state == 'paused' else 'pause')
+                            elif key_lower == 'up':
                                 selected_idx = max(0, selected_idx - 1)
-                            elif key == 'down':
+                            elif key_lower == 'down':
                                 selected_idx = min(len(instance_keys) - 1, selected_idx + 1)
-                            elif key == 'u':
-                                if 0 <= selected_idx < len(instance_keys):
-                                    inst_name = instance_keys[selected_idx]
-                                    send_control_command(inst_name, 'toggle_no_upgrades')
-                            elif key == 'r':
-                                if 0 <= selected_idx < len(instance_keys):
-                                    inst_name = instance_keys[selected_idx]
-                                    runner = runners_by_name.get(inst_name)
-                                    st = states.get(inst_name)
-                                    if runner and st:
-                                        # Mark state and restart
-                                        st.state = "restarting"
-                                        st.last_update = time.time()
-                                        st.error = None
-                                        st.wave = 0
-                                        st.captcha_attempts = 0
-                                        st.no_battle = 0
-                                        st.uptime_stop = None
-                                        runner.restart()
-                                        st.pid = runner.proc.pid if runner.proc else None
-                                        st.uptime_start = time.time()
-                                        st.state = "starting"
-                            elif key == 'a':
-                                if 0 <= selected_idx < len(instance_keys):
-                                    inst_name = instance_keys[selected_idx]
-                                    st = states.get(inst_name)
-                                    if st:
-                                        send_control_command(inst_name, 'autobattle_off' if st.autobattle else 'autobattle_on')
+                            elif key_lower == 'u':
+                                if key.isupper():
+                                    for inst_name in instance_keys:
+                                        send_control_command(inst_name, 'toggle_no_upgrades')
+                                else:
+                                    if 0 <= selected_idx < len(instance_keys):
+                                        inst_name = instance_keys[selected_idx]
+                                        send_control_command(inst_name, 'toggle_no_upgrades')
+                            elif key_lower == 'r':
+                                if key.isupper():
+                                    # Restart all
+                                    for inst_name in instance_keys:
+                                        runner = runners_by_name.get(inst_name)
+                                        st_all = states.get(inst_name)
+                                        if runner and st_all:
+                                            st_all.state = "restarting"
+                                            st_all.last_update = time.time()
+                                            st_all.error = None
+                                            st_all.wave = 0
+                                            st_all.captcha_attempts = 0
+                                            st_all.no_battle = 0
+                                            st_all.uptime_stop = None
+                                            runner.restart()
+                                            st_all.pid = runner.proc.pid if runner.proc else None
+                                            st_all.uptime_start = time.time()
+                                            st_all.state = "starting"
+                                else:
+                                    if 0 <= selected_idx < len(instance_keys):
+                                        inst_name = instance_keys[selected_idx]
+                                        runner = runners_by_name.get(inst_name)
+                                        st_sel = states.get(inst_name)
+                                        if runner and st_sel:
+                                            st_sel.state = "restarting"
+                                            st_sel.last_update = time.time()
+                                            st_sel.error = None
+                                            st_sel.wave = 0
+                                            st_sel.captcha_attempts = 0
+                                            st_sel.no_battle = 0
+                                            st_sel.uptime_stop = None
+                                            runner.restart()
+                                            st_sel.pid = runner.proc.pid if runner.proc else None
+                                            st_sel.uptime_start = time.time()
+                                            st_sel.state = "starting"
+                            elif key_lower == 'a':
+                                if key.isupper():
+                                    for inst_name, st_all in states.items():
+                                        send_control_command(inst_name, 'autobattle_off' if st_all.autobattle else 'autobattle_on')
+                                else:
+                                    if 0 <= selected_idx < len(instance_keys):
+                                        inst_name = instance_keys[selected_idx]
+                                        st_sel = states.get(inst_name)
+                                        if st_sel:
+                                            send_control_command(inst_name, 'autobattle_off' if st_sel.autobattle else 'autobattle_on')
                     # Update instance_keys in case states changed
                     instance_keys = sorted(states.keys())
                     selected_idx = min(selected_idx, len(instance_keys) - 1)
