@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import signal
 import threading
 
+from new_captcha import actually_solve
+
 
 # --- ADB Utility Functions ---
 # Reuse connection for faster commands
@@ -524,18 +526,13 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             cap.release()
             os.remove(video_path)  # Clean up video file
 
-            # Go through screenshots from last to first
-            log_index = None
-            for i in reversed(range(screenshot_count)):
-                screenshot_file = f"{folder_name}/screenshot_{i:03d}.png"
-                log_index = captcha.get_most_tilted(screenshot_file)
-                if log_index is not None:
-                    print(f"Most tilted log (number {log_index} clockwise) found in: {screenshot_file}")
-                    break
+            log_index = actually_solve(folder_name, screenshot_count)
 
             if log_index is None:
                 print("Failed to solve captcha: No tilted log found. Random log selected.")
                 log_index = random.randint(0, len(captcha_logs) - 1)
+            else:
+                print(f"Fastest moving log identified as number {log_index} clockwise")
 
             target = captcha_logs[log_index]
             click_pos = with_offset(tuple(target))
