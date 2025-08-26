@@ -50,7 +50,7 @@ def solve_captcha(path1: str, path2: str, debug: bool=False):
 
     vis = im2.copy()
     if largest is None:
-        return (-1, 0)
+        return (None, 0)
     #if max_area 
         
     x,y,wc,hc = cv2.boundingRect(largest)
@@ -94,7 +94,7 @@ def actually_solve(folder_path, screenshot_count):
         if confidence > 500:
             return dir
     else:
-        return -1
+        return None
 
 
 def test(folder_name, screenshot_count):
