@@ -3,3 +3,6 @@ Pillow>=9.5.0
 opencv-python>=4.9.0
 matplotlib>=3.8.0
 pandas>=2.0.0
+
+# adb_screen_controller requirements
+pillow>=8.0.0
