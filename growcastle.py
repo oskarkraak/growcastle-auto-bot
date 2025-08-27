@@ -29,6 +29,7 @@ PENDING_AUTOBATTLE_EXIT = False  # Set when autobattle turned off to perform exi
 AUTOBATTLE_EXIT_SWIPED = False  # Internal state to ensure swipe performed once
 AUTOBATTLE_EXIT_REQUEST_TS = 0  # When autobattle_off was requested
 AUTOBATTLE_EXIT_SWIPED_TS = 0   # When swipe step completed
+CURRENT_CAPTCHA_FOLDER = None   # Track current captcha folder for success/failure marking
 
 def emit_status(state, **kwargs):
     """Emit a single-line, machine-readable status event for dashboard consumption.
@@ -356,7 +357,7 @@ def check_control_file():
             pass
 
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
-    global NO_UPGRADES_ACTIVE, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_REQUEST_TS, AUTOBATTLE_EXIT_SWIPED_TS
+    global NO_UPGRADES_ACTIVE, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_REQUEST_TS, AUTOBATTLE_EXIT_SWIPED_TS, CURRENT_CAPTCHA_FOLDER
     # Initialize runtime flag once
     if NO_UPGRADES_ACTIVE is None:
         NO_UPGRADES_ACTIVE = bool(no_upgrades)
@@ -463,6 +464,14 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 emit_status("captcha_wait", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
                 time.sleep(1)
                 continue
+            
+            if captcha_attempt > 0:
+                # Create failure indicator file
+                with open(os.path.join(folder_name, "!failed"), "w") as f:
+                    f.write(f"Captcha solving failed at attempt {captcha_attempt}\n")
+                    f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                CURRENT_CAPTCHA_FOLDER = None  # Reset since the last attempt failed
+
             captcha_attempt += 1
             if captcha_attempt > captcha_retry_attempts:
                 print(f"Captcha solving failed after {captcha_retry_attempts} attempts. Exiting.")
@@ -473,6 +482,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             
             # Create folder for screenshots
             folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
+            CURRENT_CAPTCHA_FOLDER = folder_name  # Store for later success marking
             os.makedirs(folder_name, exist_ok=True)
 
             # Click the captcha start button to initiate the captcha
@@ -528,6 +538,11 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             log_index = captcha_solver.solve_captcha(folder_name, screenshot_count)
             if log_index is None:
                 print("Captcha solver failed. Exiting.")
+                # Create failure indicator file
+                with open(os.path.join(folder_name, "!failed"), "w") as f:
+                    f.write(f"Captcha solving failed at attempt {captcha_attempt}\n")
+                    f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                CURRENT_CAPTCHA_FOLDER = None  # Reset since this attempt failed
                 exit(1)
             else:
                 print(f"Fastest moving log identified as number {log_index} clockwise")
@@ -545,6 +560,14 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
                 captcha_attempt = 0
                 print("Captcha solved")
                 emit_status("captcha_solved", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
+                
+                # Mark the current captcha folder as successful
+                if CURRENT_CAPTCHA_FOLDER and os.path.exists(CURRENT_CAPTCHA_FOLDER):
+                    with open(os.path.join(CURRENT_CAPTCHA_FOLDER, "!succeeded"), "w") as f:
+                        f.write("Captcha solving succeeded\n")
+                        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(f"Wave: {n_wave}\n")
+                    CURRENT_CAPTCHA_FOLDER = None  # Reset after marking success
 
             # Battle mode: use abilities
             if abilities:
