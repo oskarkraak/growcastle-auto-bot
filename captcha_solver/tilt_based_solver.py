@@ -1,9 +1,26 @@
+"""
+Tilt-based captcha solver implementation.
+
+This solver detects tilted logs in individual screenshots.
+"""
+
+from typing import Optional
+from .captcha_solver import CaptchaSolver
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import math
 import os
 import pandas as pd
+
+
+class TiltBasedSolver(CaptchaSolver):
+    """Solver that detects tilted logs in individual screenshots."""
+    
+    def solve_captcha(self, folder_name: str, screenshot_count: int) -> Optional[int]:
+        return solve(folder_name, screenshot_count)
+
 
 def load_and_preprocess_image(path):
     img = cv2.imread(path)
@@ -101,15 +118,32 @@ def get_most_tilted(image_path) -> int | None:
             return pos_num
     return None
 
-def actually_solve(folder_path, screenshot_count):
+def solve(folder_path, screenshot_count):
     # Iterate through all screenshots
-    for i in reversed(range(0, screenshot_count-1)):
-        img1_path = f"{folder_path}/screenshot_{i:03d}.png"
-        dir = get_most_tilted(img1_path)
+    for i in reversed(range(screenshot_count)):
+        img_path = f"{folder_path}/screenshot_{i:03d}.png"
+        dir = get_most_tilted(img_path)
         if dir is not None:
             return dir
     else:
         return None
+    
+def test():
+    screenshot_count = 11
+    folder_name = "captcha_screenshots"
+
+    # Go through screenshots from last to first
+    for i in reversed(range(screenshot_count)):
+        screenshot_path = f"{folder_name}/screenshot_{i:03d}.png"
+        log_index = get_most_tilted(screenshot_path)
+        if log_index is not None:
+            print(f"Most tilted ({log_index}) found in: {screenshot_path}")
+            break
+
+    if log_index is None:
+        print("Failed to solve captcha: No tilted log found.")
+        exit(1)
+
     
 def main():
     img, thresh, closed = load_and_preprocess_image('captcha_screenshots/20250803_181211_attempt1/screenshot_053.png')

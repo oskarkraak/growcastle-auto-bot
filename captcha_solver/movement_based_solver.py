@@ -1,12 +1,29 @@
+"""
+Movement-based captcha solver implementation.
+
+This solver detects movement between consecutive screenshots.
+"""
+
+from typing import Optional
+from .captcha_solver import CaptchaSolver
+
 import cv2, numpy as np
 import math
+
+
+class MovementBasedSolver(CaptchaSolver):
+    """Solver that detects movement between consecutive screenshots."""
+    
+    def solve_captcha(self, folder_name: str, screenshot_count: int) -> Optional[int]:
+        return solve(folder_name, screenshot_count)
+
 
 def crop_image(img, top:int, right: int, bottom: int, left: int):
     height, width = img.shape[:2]
     cropped_img = img[top:height-bottom, left:width-right]
     return cropped_img
 
-def solve_captcha(path1: str, path2: str, debug: bool=False):
+def get_most_moved(path1: str, path2: str, debug: bool=False):
     from pathlib import Path
     from matplotlib import pyplot as plt
 
@@ -85,12 +102,12 @@ def solve_captcha(path1: str, path2: str, debug: bool=False):
     return (direction_index_starting_from_top, max_area)
 
 
-def actually_solve(folder_path, screenshot_count):
+def solve(folder_path, screenshot_count):
     # Iterate through all screenshots
     for i in reversed(range(0, screenshot_count-1)):
         img1_path = f"{folder_path}/screenshot_{i:03d}.png"
         img2_path = f"{folder_path}/screenshot_{i+1:03d}.png"
-        dir, confidence = solve_captcha(img1_path, img2_path)
+        dir, confidence = get_most_moved(img1_path, img2_path)
         if confidence > 500:
             return dir
     else:
@@ -107,9 +124,8 @@ def test(folder_name, screenshot_count):
 
 
 if __name__ == "__main__":
-    screenshot_count = 140
-    folder_name = "TODO captcha fail/20250813_200634_attempt1"
-    #folder_name = "TODO captcha fail/20250813_200648_attempt2"
+    screenshot_count = 71
+    folder_name = "captcha_screenshots/20250827_142350_attempt1"
     test(folder_name, screenshot_count)
     dir = actually_solve(folder_name, screenshot_count)
     print("Result: ", dir)

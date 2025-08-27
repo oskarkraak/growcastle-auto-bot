@@ -13,8 +13,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import signal
 
-from captcha import actually_solve as solve_captcha
-from new_captcha import actually_solve as solve_captcha_new
+from captcha_solver.movement_based_solver import MovementBasedSolver
+captcha_solver = MovementBasedSolver()
 
 
 # --- ADB Utility Functions ---
@@ -492,7 +492,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             subprocess.run(["adb", "-s", ADB_DEVICE, "pull", "/sdcard/captcha_recording.mp4", video_path])
             subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", "/sdcard/captcha_recording.mp4"])
             
-            extraction_fps = 10
+            extraction_fps = 20
             import cv2
             cap = cv2.VideoCapture(video_path)
             fps = cap.get(cv2.CAP_PROP_FPS)
@@ -525,12 +525,10 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             cap.release()
             os.remove(video_path)  # Clean up video file
 
-            log_index = solve_captcha(folder_name, screenshot_count)
+            log_index = captcha_solver.solve_captcha(folder_name, screenshot_count)
             if log_index is None:
-                log_index = solve_captcha_new(folder_name, screenshot_count)
-            if log_index is None:
-                print("Failed to solve captcha: No tilted log found. Random log selected.")
-                log_index = random.randint(0, len(captcha_logs) - 1)
+                print("Captcha solver failed. Exiting.")
+                exit(1)
             else:
                 print(f"Fastest moving log identified as number {log_index} clockwise")
 
