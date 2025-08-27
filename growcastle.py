@@ -482,7 +482,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             # Start screen recording
             video_path = f"{folder_name}/captcha_recording.mp4"
             recording_process = subprocess.Popen(
-                ["adb", "-s", ADB_DEVICE, "shell", "screenrecord", "--time-limit", "7", "/sdcard/captcha_recording.mp4"],
+                ["adb", "-s", ADB_DEVICE, "shell", "screenrecord", "--time-limit", "5", "/sdcard/captcha_recording.mp4"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
             
@@ -493,7 +493,7 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             subprocess.run(["adb", "-s", ADB_DEVICE, "pull", "/sdcard/captcha_recording.mp4", video_path])
             subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", "/sdcard/captcha_recording.mp4"])
             
-            extraction_fps = 40
+            extraction_fps = 10
             import cv2
             cap = cv2.VideoCapture(video_path)
             fps = cap.get(cv2.CAP_PROP_FPS)
