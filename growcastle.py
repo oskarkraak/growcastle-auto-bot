@@ -657,8 +657,8 @@ if __name__ == "__main__":
                        help='Skip upgrade actions and only perform battle actions')
     parser.add_argument('--no-solve-captcha', action='store_true',
                        help='Skip solving captchas (bot will wait if captcha appears)')
-    parser.add_argument('--captcha-retry-attempts', type=int, default=3,
-                       help='Number of retry attempts for solving captcha (default: 3)')
+    parser.add_argument('--captcha-retry-attempts', type=int, default=2,
+                       help='Number of retry attempts for solving captcha (default: 2)')
     parser.add_argument('--setup', action='store_true',
                        help='Run interactive setup to create/update config file')
     parser.add_argument('--setup-add', action='store_true',
