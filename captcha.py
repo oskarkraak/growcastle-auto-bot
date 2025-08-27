@@ -101,6 +101,16 @@ def get_most_tilted(image_path) -> int | None:
             return pos_num
     return None
 
+def actually_solve(folder_path, screenshot_count):
+    # Iterate through all screenshots
+    for i in reversed(range(0, screenshot_count-1)):
+        img1_path = f"{folder_path}/screenshot_{i:03d}.png"
+        dir = get_most_tilted(img1_path)
+        if dir is not None:
+            return dir
+    else:
+        return None
+    
 def main():
     img, thresh, closed = load_and_preprocess_image('captcha_screenshots/20250803_181211_attempt1/screenshot_053.png')
     # Adjust area threshold based on image size

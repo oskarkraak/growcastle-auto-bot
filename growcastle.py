@@ -7,15 +7,14 @@ import random
 import time
 import os
 from datetime import datetime
-import captcha
 import subprocess
 import tempfile
 from PIL import Image
 import matplotlib.pyplot as plt
 import signal
-import threading
 
-from new_captcha import actually_solve
+from captcha import actually_solve as solve_captcha
+from new_captcha import actually_solve as solve_captcha_new
 
 
 # --- ADB Utility Functions ---
@@ -526,8 +525,9 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             cap.release()
             os.remove(video_path)  # Clean up video file
 
-            log_index = actually_solve(folder_name, screenshot_count)
-
+            log_index = solve_captcha(folder_name, screenshot_count)
+            if log_index is None:
+                log_index = solve_captcha_new(folder_name, screenshot_count)
             if log_index is None:
                 print("Failed to solve captcha: No tilted log found. Random log selected.")
                 log_index = random.randint(0, len(captcha_logs) - 1)
