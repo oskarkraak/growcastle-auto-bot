@@ -190,10 +190,11 @@ class DashboardGUI(tk.Tk):
         self.btn_no_up = ttk.Button(btns, text="Toggle Upgrades", command=self._on_toggle_upgrades)
         self.btn_auto = ttk.Button(btns, text="Toggle Autobattle", command=self._on_toggle_autobattle)
         self.btn_restart = ttk.Button(btns, text="Restart", command=self._on_restart)
+        self.btn_adb_control = ttk.Button(btns, text="ADB Controller", command=self._on_adb_controller)
         self.btn_pause_all = ttk.Button(btns, text="Pause/Unpause All", command=self._on_pause_all)
         self.btn_restart_all = ttk.Button(btns, text="Restart All", command=self._on_restart_all)
 
-        for w in (self.btn_pause, self.btn_no_up, self.btn_auto, self.btn_restart, self.btn_pause_all, self.btn_restart_all):
+        for w in (self.btn_pause, self.btn_no_up, self.btn_auto, self.btn_restart, self.btn_adb_control, self.btn_pause_all, self.btn_restart_all):
             w.pack(side=tk.LEFT, padx=4)
 
         self.status = tk.StringVar(value="Ready")
@@ -212,6 +213,7 @@ class DashboardGUI(tk.Tk):
         self.bind("u", lambda e: self._on_toggle_upgrades())
         self.bind("a", lambda e: self._on_toggle_autobattle())
         self.bind("r", lambda e: self._on_restart())
+        self.bind("c", lambda e: self._on_adb_controller())
 
     def _move_selection(self, delta: int):
         ids = list(self.tree.get_children(""))
@@ -267,6 +269,45 @@ class DashboardGUI(tk.Tk):
             st.pid = runner.proc.pid if runner.proc else None
             st.uptime_start = time.time()
             st.state = "starting"
+
+    def _on_adb_controller(self):
+        st = self._selected_state()
+        if not st:
+            messagebox.showwarning("No Selection", "Please select an instance first.")
+            return
+        
+        # Get the Python executable used by the current application
+        python_exe = sys.executable
+        
+        # Path to the ADB controller script
+        root = os.path.dirname(os.path.abspath(__file__))
+        adb_script = os.path.join(root, "adb_screen_controller.py")
+        
+        if not os.path.exists(adb_script):
+            messagebox.showerror("Error", f"ADB controller script not found: {adb_script}")
+            return
+        
+        try:
+            # Launch ADB controller for the selected device
+            cmd = [python_exe, adb_script, "--device", st.device]
+            
+            # Launch in a new process without console window
+            creationflags = 0
+            if os.name == "nt":
+                # On Windows, hide the console window
+                creationflags = subprocess.CREATE_NO_WINDOW
+            
+            subprocess.Popen(
+                cmd,
+                cwd=root,
+                creationflags=creationflags,
+                start_new_session=(os.name != "nt")
+            )
+            
+            self.status.set(f"Launched ADB controller for {st.name} ({st.device})")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch ADB controller: {e}")
 
     def _on_pause_all(self):
         for st in self.states.values():
