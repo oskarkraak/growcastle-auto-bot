@@ -2,7 +2,6 @@ import sys
 import argparse
 import json
 
-
 import random
 import time
 import os
@@ -16,25 +15,22 @@ import signal
 from captcha_solver.movement_based_solver import MovementBasedSolver
 captcha_solver = MovementBasedSolver()
 
-
-# --- ADB Utility Functions ---
-# Reuse connection for faster commands
+# --- Global State Variables ---
 _adb_connection = None
 STATUS_ENABLED = False
 INSTANCE_NAME = None
 PAUSED = False
-NO_UPGRADES_ACTIVE = None  # Will be set to initial CLI flag (True/False)
-AUTO_BATTLE_ENABLED = False  # Runtime flag toggled via control file
-PENDING_AUTOBATTLE_EXIT = False  # Set when autobattle turned off to perform exit sequence
-AUTOBATTLE_EXIT_SWIPED = False  # Internal state to ensure swipe performed once
-AUTOBATTLE_EXIT_REQUEST_TS = 0  # When autobattle_off was requested
-AUTOBATTLE_EXIT_SWIPED_TS = 0   # When swipe step completed
-CURRENT_CAPTCHA_FOLDER = None   # Track current captcha folder for success/failure marking
+NO_UPGRADES_ACTIVE = None
+AUTO_BATTLE_ENABLED = False
+PENDING_AUTOBATTLE_EXIT = False
+AUTOBATTLE_EXIT_SWIPED = False
+AUTOBATTLE_EXIT_REQUEST_TS = 0
+AUTOBATTLE_EXIT_SWIPED_TS = 0
+CURRENT_CAPTCHA_FOLDER = None
 
+# --- Status and Control Functions ---
 def emit_status(state, **kwargs):
-    """Emit a single-line, machine-readable status event for dashboard consumption.
-    Prints lines prefixed with __STATUS__ followed by a JSON object. No effect unless --status is enabled.
-    """
+    """Emit a single-line, machine-readable status event for dashboard consumption."""
     if not STATUS_ENABLED:
         return
     payload = {
@@ -47,9 +43,46 @@ def emit_status(state, **kwargs):
     try:
         print(f"__STATUS__ {json.dumps(payload, separators=(',', ':'))}", flush=True)
     except Exception:
-        # Fallback to avoid breaking main flow if serialization fails
         pass
 
+def check_control_file():
+    """Check for pause/unpause and other toggle commands via control file."""
+    global PAUSED, NO_UPGRADES_ACTIVE, AUTO_BATTLE_ENABLED, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_REQUEST_TS, AUTOBATTLE_EXIT_SWIPED_TS
+    safe_name = "".join(c for c in INSTANCE_NAME if c.isalnum() or c in ('-', '_'))
+    control_path = os.path.join(tempfile.gettempdir(), f"growcastle_control_{safe_name}.json")
+    if os.path.exists(control_path):
+        try:
+            with open(control_path, "r") as f:
+                data = json.load(f)
+            cmd = data.get("command")
+            if cmd == "pause" and not PAUSED:
+                PAUSED = True
+                emit_status("paused")
+            elif cmd == "unpause" and PAUSED:
+                PAUSED = False
+                emit_status("unpaused")
+            elif cmd == "toggle_no_upgrades":
+                if NO_UPGRADES_ACTIVE is not None:
+                    NO_UPGRADES_ACTIVE = not NO_UPGRADES_ACTIVE
+                    emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
+            elif cmd == "autobattle_on" and not AUTO_BATTLE_ENABLED:
+                AUTO_BATTLE_ENABLED = True
+                emit_status("config", autobattle=AUTO_BATTLE_ENABLED)
+            elif cmd == "autobattle_off" and AUTO_BATTLE_ENABLED:
+                AUTO_BATTLE_ENABLED = False
+                PENDING_AUTOBATTLE_EXIT = True
+                AUTOBATTLE_EXIT_SWIPED = False
+                AUTOBATTLE_EXIT_REQUEST_TS = time.time()
+                AUTOBATTLE_EXIT_SWIPED_TS = 0
+                emit_status("config", autobattle=AUTO_BATTLE_ENABLED, pending_autobattle_exit=True, off_requested=True)
+        except Exception:
+            pass
+        try:
+            os.remove(control_path)
+        except Exception:
+            pass
+
+# --- ADB Utility Functions ---
 def get_adb_connection():
     global _adb_connection
     if _adb_connection is None or _adb_connection.poll() is not None:
@@ -137,6 +170,7 @@ def show_screenshot_and_get_click(img_path, prompt):
         return None
 
 
+# --- Configuration Functions ---
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         print(f"Config file '{CONFIG_PATH}' not found. Please run with --setup to create it.")
@@ -279,8 +313,7 @@ def setup_config(add_mode=False):
     print("You can now run the bot normally.")
     sys.exit(0)
 
-
-
+# --- Utility Functions ---
 def with_offset(coord, max_offset=15):
     """Apply a random offset to a coordinate."""
     x, y = coord
@@ -304,7 +337,6 @@ def hex_to_rgb(hex_value):
 def sleep_quick():
     time.sleep(random.uniform(0.2, 0.5))
 
-
 def is_boss_present():
     config = load_config()
     boss_pixel = config.get("boss_pixel")
@@ -316,361 +348,396 @@ def is_boss_present():
     pixel_color = get_pixel_color(screenshot_path, x, y)
     return pixel_color == expected_color
 
+# --- Screen State Detection Functions ---
+def get_screen_state(screenshot_path, config):
+    """Detect current screen state and return relevant information."""
+    android_home_pixel = get_pixel_color(screenshot_path, *config["android_home_screen_bottom_right"]["coord"])
+    battle_button_pixel = get_pixel_color(screenshot_path, *config["battle_button"]["coord"])
+    menu_button_pixel = get_pixel_color(screenshot_path, *config["menu_button"]["coord"])
+    captcha_diamond_pixel = get_pixel_color(screenshot_path, *config["captcha_diamond"]["coord"])
+    win_panel_pixel = get_pixel_color(screenshot_path, *config["win_panel"]["coord"])
+    
+    return {
+        'android_home': android_home_pixel == tuple(config["android_home_screen_bottom_right"]["color"]),
+        'battle': battle_button_pixel == tuple(config["battle_button"]["color"]),
+        'menu': menu_button_pixel == tuple(config["menu_button"]["color"]),
+        'captcha': captcha_diamond_pixel == tuple(config["captcha_diamond"]["color"]),
+        'win_panel': win_panel_pixel == tuple(config["win_panel"]["color"])
+    }
 
-
-def check_control_file():
-    """Check for pause/unpause and other toggle commands via control file."""
-    global PAUSED, NO_UPGRADES_ACTIVE, AUTO_BATTLE_ENABLED, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_REQUEST_TS, AUTOBATTLE_EXIT_SWIPED_TS
-    safe_name = "".join(c for c in INSTANCE_NAME if c.isalnum() or c in ('-', '_'))
-    control_path = os.path.join(tempfile.gettempdir(), f"growcastle_control_{safe_name}.json")
-    if os.path.exists(control_path):
+# --- Autobattle Exit Handler ---
+def handle_autobattle_exit(config):
+    """Handle the autobattle exit sequence."""
+    global PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_SWIPED_TS
+    
+    if not AUTOBATTLE_EXIT_SWIPED:
         try:
-            with open(control_path, "r") as f:
-                data = json.load(f)
-            cmd = data.get("command")
-            if cmd == "pause" and not PAUSED:
-                PAUSED = True
-                emit_status("paused")
-            elif cmd == "unpause" and PAUSED:
-                PAUSED = False
-                emit_status("unpaused")
-            elif cmd == "toggle_no_upgrades":
-                if NO_UPGRADES_ACTIVE is not None:
-                    NO_UPGRADES_ACTIVE = not NO_UPGRADES_ACTIVE
-                    emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
-            elif cmd == "autobattle_on" and not AUTO_BATTLE_ENABLED:
-                AUTO_BATTLE_ENABLED = True
-                emit_status("config", autobattle=AUTO_BATTLE_ENABLED)
-            elif cmd == "autobattle_off" and AUTO_BATTLE_ENABLED:
-                AUTO_BATTLE_ENABLED = False
-                # Begin exit sequence (swipe -> exit taps)
-                PENDING_AUTOBATTLE_EXIT = True
-                AUTOBATTLE_EXIT_SWIPED = False
-                AUTOBATTLE_EXIT_REQUEST_TS = time.time()
-                AUTOBATTLE_EXIT_SWIPED_TS = 0
-                emit_status("config", autobattle=AUTO_BATTLE_ENABLED, pending_autobattle_exit=True, off_requested=True)
+            x1, y1 = config["power_saving_screen_exit_swipe_left"]["coord"]
+            x2, y2 = config["power_saving_screen_exit_swipe_right"]["coord"]
+            adb_swipe(x1, y1, x2, y2, duration_ms=random.uniform(420, 560))
+            AUTOBATTLE_EXIT_SWIPED = True
+            AUTOBATTLE_EXIT_SWIPED_TS = time.time()
+            emit_status("config", autobattle=False, exit_swipe=True)
+            time.sleep(0.4)
+            return True
         except Exception:
-            pass
-        try:
-            os.remove(control_path)
-        except Exception:
-            pass
+            reset_autobattle_exit_state(abort_reason="exit_abort_swipe")
+            return False
+    else:
+        # Attempt exit taps
+        safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
+        screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_loop_{safe_device}.png")
+        adb_screenshot(screenshot_path)
+        
+        swiped_age = time.time() - AUTOBATTLE_EXIT_SWIPED_TS if AUTOBATTLE_EXIT_SWIPED_TS else 0
+        battle_screen_visible = get_pixel_color(screenshot_path, *config["battle_button"]["coord"]) == tuple(config["battle_button"]["color"])
+        
+        if battle_screen_visible or swiped_age > 5:
+            try:
+                adb_tap_fast(*with_offset(tuple(config["wave_exit_button_1"]["coord"])))
+                sleep_quick()
+                adb_tap_fast(*with_offset(tuple(config["wave_exit_button_2"]["coord"])))
+                sleep_quick()
+                reset_autobattle_exit_state(complete=True)
+                time.sleep(0.4)
+                return True
+            except Exception:
+                reset_autobattle_exit_state(abort_reason="exit_abort_taps")
+                return False
+    return False
 
+def reset_autobattle_exit_state(complete=False, abort_reason=None):
+    """Reset autobattle exit state variables."""
+    global PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_REQUEST_TS, AUTOBATTLE_EXIT_SWIPED_TS
+    
+    PENDING_AUTOBATTLE_EXIT = False
+    AUTOBATTLE_EXIT_SWIPED = False
+    AUTOBATTLE_EXIT_REQUEST_TS = 0
+    AUTOBATTLE_EXIT_SWIPED_TS = 0
+    
+    if complete:
+        emit_status("config", autobattle=False, autobattle_exit_complete=True)
+    elif abort_reason:
+        emit_status("config", autobattle=False, **{abort_reason: True})
+
+# --- Game State Handlers ---
+def handle_home_screen(config, game_state):
+    """Handle android home screen state."""
+    emit_status("home", **game_state)
+    adb_tap_fast(*tuple(config["android_home_screen_growcastle_icon"]["coord"]))
+
+def handle_captcha(config, game_state, no_solve_captcha, captcha_retry_attempts):
+    """Handle captcha solving state."""
+    global CURRENT_CAPTCHA_FOLDER
+    
+    if no_solve_captcha:
+        emit_status("captcha_wait", **game_state)
+        time.sleep(1)
+        return game_state['captcha_attempts']
+    
+    # Mark previous attempt as failed if this isn't the first attempt
+    if game_state['captcha_attempts'] > 0 and CURRENT_CAPTCHA_FOLDER:
+        mark_captcha_failed(CURRENT_CAPTCHA_FOLDER, game_state['captcha_attempts'])
+        CURRENT_CAPTCHA_FOLDER = None
+    
+    captcha_attempt = game_state['captcha_attempts'] + 1
+    if captcha_attempt > captcha_retry_attempts:
+        print(f"Captcha solving failed after {captcha_retry_attempts} attempts. Exiting.")
+        emit_status("captcha_failed", wave=game_state['wave'], captcha_attempts=captcha_attempt, no_battle=game_state['no_battle_count'])
+        exit(1)
+    
+    print(f"Solving captcha (attempt {captcha_attempt})")
+    emit_status("captcha_solving", wave=game_state['wave'], captcha_attempts=captcha_attempt, no_battle=game_state['no_battle_count'])
+    
+    log_index = solve_captcha_sequence(config, captcha_attempt)
+    if log_index is None:
+        print("Captcha solver failed. Exiting.")
+        if CURRENT_CAPTCHA_FOLDER:
+            mark_captcha_failed(CURRENT_CAPTCHA_FOLDER, captcha_attempt)
+            CURRENT_CAPTCHA_FOLDER = None
+        exit(1)
+    
+    # Click the identified log
+    target = config["captcha_logs"][log_index]
+    click_pos = with_offset(tuple(target))
+    adb_tap(*click_pos)
+    time.sleep(random.uniform(1, 2))
+    sleep_quick()
+    
+    emit_status("captcha_clicked", wave=game_state['wave'], captcha_attempts=captcha_attempt, no_battle=0, log_index=log_index)
+    return captcha_attempt
+
+def handle_battle_mode(config, game_state):
+    """Handle battle mode state."""
+    global CURRENT_CAPTCHA_FOLDER
+    
+    # Mark captcha as solved if we just solved one
+    if game_state['captcha_attempts'] > 0:
+        print("Captcha solved")
+        emit_status("captcha_solved", **game_state)
+        
+        if CURRENT_CAPTCHA_FOLDER and os.path.exists(CURRENT_CAPTCHA_FOLDER):
+            mark_captcha_succeeded(CURRENT_CAPTCHA_FOLDER, game_state['wave'])
+            CURRENT_CAPTCHA_FOLDER = None
+        
+        return 0  # Reset captcha attempts
+    
+    # Use abilities
+    abilities = config.get("abilities", [])
+    if abilities:
+        target = random.choice(abilities)
+        click_pos = with_offset(tuple(target))
+        adb_tap_fast(*click_pos)
+        sleep_quick()
+    
+    # Emit appropriate status
+    if is_boss_present():
+        emit_status("boss", **game_state)
+    else:
+        emit_status("battle", **game_state)
+    
+    return game_state['captcha_attempts']
+
+def handle_menu_mode(config, game_state, won):
+    """Handle menu/upgrade mode state."""
+    # Log wave outcome
+    if won:
+        print("VICTORY")
+        emit_status("wave_end", wave=game_state['wave'], outcome="W")
+    else:
+        print("DEFEAT")
+        emit_status("wave_end", wave=game_state['wave'], outcome="L")
+    
+    # Wait before upgrades
+    time.sleep(min(60, random.expovariate(0.5)))
+    
+    # Perform upgrades if enabled
+    if not NO_UPGRADES_ACTIVE:
+        perform_upgrades(config)
+    
+    # Switch to battle mode
+    switch_pos = with_offset(tuple(config["battle_switch"]))
+    adb_tap_fast(*switch_pos)
+    time.sleep(random.uniform(0.5, 1))
+    
+    # Start new wave
+    start_new_wave(config)
+    
+    new_wave = game_state['wave'] + 1
+    print(f"Wave {new_wave} started")
+    emit_status("menu", wave=new_wave, captcha_attempts=game_state['captcha_attempts'], no_battle=0)
+    
+    return new_wave, False  # Return new wave number and reset won flag
+
+def handle_idle_state(config, game_state):
+    """Handle idle/unknown state."""
+    no_battle_count = game_state['no_battle_count'] + 1
+    print(f"No battle mode detected, waiting... (count: {no_battle_count})")
+    emit_status("idle", wave=game_state['wave'], captcha_attempts=game_state['captcha_attempts'], no_battle=no_battle_count)
+    
+    # Attempt to close windows if stuck
+    if no_battle_count >= 5:
+        if no_battle_count % 2 == 0:
+            print(f"No battle mode detected {no_battle_count} times, attempting to close hero windows...")
+            adb_tap_fast(*with_offset(tuple(config["hero_window_close1"]["coord"])))
+            sleep_quick()
+            adb_tap_fast(*with_offset(tuple(config["hero_window_close2"]["coord"])))
+            sleep_quick()
+        else:
+            print(f"No battle mode detected {no_battle_count} times, attempting to close golden horn window...")
+            adb_tap_fast(*with_offset(tuple(config["golden_horn_close"]["coord"])))
+            sleep_quick()
+    
+    time.sleep(1)
+    return no_battle_count
+
+# --- Helper Functions for Handlers ---
+def solve_captcha_sequence(config, captcha_attempt):
+    """Execute the complete captcha solving sequence."""
+    global CURRENT_CAPTCHA_FOLDER
+    
+    # Create folder for screenshots
+    folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
+    CURRENT_CAPTCHA_FOLDER = folder_name
+    os.makedirs(folder_name, exist_ok=True)
+    
+    # Click start button and record
+    adb_tap_fast(*with_offset(tuple(config["captcha_start_button"]["coord"])))
+    
+    # Record and process video
+    video_path = f"{folder_name}/captcha_recording.mp4"
+    recording_process = subprocess.Popen(
+        ["adb", "-s", ADB_DEVICE, "shell", "screenrecord", "--time-limit", "5", "/sdcard/captcha_recording.mp4"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    recording_process.wait()
+    
+    subprocess.run(["adb", "-s", ADB_DEVICE, "pull", "/sdcard/captcha_recording.mp4", video_path])
+    subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", "/sdcard/captcha_recording.mp4"])
+    
+    # Extract frames
+    screenshot_count = extract_captcha_frames(video_path, folder_name, config["captcha_region"])
+    os.remove(video_path)
+    
+    # Solve captcha
+    return captcha_solver.solve_captcha(folder_name, screenshot_count)
+
+def extract_captcha_frames(video_path, folder_name, captcha_region):
+    """Extract frames from captcha video for analysis."""
+    import cv2
+    
+    extraction_fps = 20
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_interval = max(1, int(fps / extraction_fps))
+    
+    screenshot_count = 0
+    frame_num = 0
+    x1, y1 = captcha_region["upper_left"]
+    x2, y2 = captcha_region["bottom_right"]
+    region = (x1, y1, x2 - x1, y2 - y1)
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        if frame_num % frame_interval == 0:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
+            region_img = img.crop((region[0], region[1], region[0]+region[2], region[1]+region[3]))
+            region_img.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
+            screenshot_count += 1
+            
+        frame_num += 1
+    
+    cap.release()
+    return screenshot_count
+
+def mark_captcha_failed(folder_name, attempt):
+    """Mark a captcha folder as failed."""
+    with open(os.path.join(folder_name, "!failed"), "w") as f:
+        f.write(f"Captcha solving failed at attempt {attempt}\n")
+        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+def mark_captcha_succeeded(folder_name, wave):
+    """Mark a captcha folder as successful."""
+    with open(os.path.join(folder_name, "!succeeded"), "w") as f:
+        f.write("Captcha solving succeeded\n")
+        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Wave: {wave}\n")
+
+def perform_upgrades(config):
+    """Perform upgrade actions."""
+    upgrade_type = random.choice(["one_click", "menu"])
+    
+    if upgrade_type == "one_click" and config.get("one_click_upgrades"):
+        target = random.choice(config["one_click_upgrades"])
+        click_pos = with_offset(tuple(target))
+        adb_tap_fast(*click_pos)
+        sleep_quick()
+        adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], 
+                 duration_ms=int(random.uniform(3000, 4500)))
+        sleep_quick()
+    elif upgrade_type == "menu" and config.get("menu_upgrades"):
+        target = random.choice(config["menu_upgrades"])
+        click_pos = with_offset(tuple(target))
+        adb_tap_fast(*click_pos)
+        sleep_quick()
+        adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], 
+                 duration_ms=int(random.uniform(3000, 4500)))
+        sleep_quick()
+        
+        # Upgrade hero
+        hero_pos = with_offset(tuple(config["hero_upgrade_button"]["coord"]))
+        adb_swipe(hero_pos[0], hero_pos[1], hero_pos[0], hero_pos[1], 
+                 duration_ms=int(random.uniform(3000, 4500)))
+        sleep_quick()
+        adb_tap_fast(*with_offset(tuple(config["hero_window_close1"]["coord"])))
+        sleep_quick()
+        adb_tap_fast(*with_offset(tuple(config["hero_window_close2"]["coord"])))
+        sleep_quick()
+
+def start_new_wave(config):
+    """Start a new wave (standard or autobattle mode)."""
+    if AUTO_BATTLE_ENABLED and not PENDING_AUTOBATTLE_EXIT:
+        adb_tap_fast(*with_offset(tuple(config["autobattle_button"]["coord"])))
+        sleep_quick()
+        adb_tap_fast(*with_offset(tuple(config["mode_toggle_button"]["coord"])))
+        sleep_quick()
+        adb_tap_fast(*with_offset(tuple(config["autobattle_start_button"]["coord"])))
+        sleep_quick()
+        adb_tap_fast(*with_offset(tuple(config["power_saving_button"]["coord"])))
+        sleep_quick()
+    else:
+        adb_tap_fast(*with_offset(tuple(config["close_popup"]["coord"])))
+        sleep_quick()
+        adb_tap_fast(*with_offset(tuple(config["military_band_f"]["coord"])))
+        sleep_quick()
+
+# --- Main Function ---
 def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
-    global NO_UPGRADES_ACTIVE, PENDING_AUTOBATTLE_EXIT, AUTOBATTLE_EXIT_SWIPED, AUTOBATTLE_EXIT_REQUEST_TS, AUTOBATTLE_EXIT_SWIPED_TS, CURRENT_CAPTCHA_FOLDER
-    # Initialize runtime flag once
+    """Main bot loop with clean state handling."""
+    global NO_UPGRADES_ACTIVE
+    
+    # Initialize runtime flag
     if NO_UPGRADES_ACTIVE is None:
         NO_UPGRADES_ACTIVE = bool(no_upgrades)
         emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
+    
     config = load_config()
-    android_home_screen_bottom_right = config["android_home_screen_bottom_right"]
-    android_home_screen_growcastle_icon = config["android_home_screen_growcastle_icon"]
-    one_click_upgrades = config["one_click_upgrades"]
-    menu_upgrades = config["menu_upgrades"]
-    abilities = config["abilities"]
-    battle_switch = config["battle_switch"]
-    captcha_logs = config["captcha_logs"]
-    captcha_region = config["captcha_region"]
-    battle_button = config["battle_button"]
-    menu_button = config["menu_button"]
-    captcha_diamond = config["captcha_diamond"]
-    captcha_start_button = config["captcha_start_button"]
-    win_panel = config["win_panel"]
-    close_popup = config["close_popup"]
-    military_band_f = config["military_band_f"]
-    hero_upgrade_button = config["hero_upgrade_button"]
-    hero_window_close1 = config["hero_window_close1"]
-    hero_window_close2 = config["hero_window_close2"]
-    golden_horn_close = config["golden_horn_close"]
-    autobattle_button = config.get("autobattle_button")
-    mode_toggle_button = config.get("mode_toggle_button")
-    autobattle_start_button = config.get("autobattle_start_button")
-    power_saving_button = config.get("power_saving_button")
-    power_saving_screen_exit_swipe_left = config.get("power_saving_screen_exit_swipe_left")
-    power_saving_screen_exit_swipe_right = config.get("power_saving_screen_exit_swipe_right")
-    wave_exit_button_1 = config.get("wave_exit_button_1")
-    wave_exit_button_2 = config.get("wave_exit_button_2")
-
+    safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
+    screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_loop_{safe_device}.png")
+    
+    # Game state variables
     n_wave = 0
     won = False
     captcha_attempt = 0
     no_battle_count = 0
-    safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
-    screenshot_path = os.path.join(tempfile.gettempdir(), f"growcastle_loop_{safe_device}.png")
+    
     while True:
         check_control_file()
         if PAUSED:
             emit_status("paused")
             time.sleep(0.5)
             continue
+        
+        # Handle autobattle exit sequence first
+        if PENDING_AUTOBATTLE_EXIT:
+            if handle_autobattle_exit(config):
+                continue
+        
+        # Take screenshot and detect screen state
         start_time = time.time()
         adb_screenshot(screenshot_path)
         elapsed_time = time.time() - start_time
         print(f"adb_screenshot took {elapsed_time:.3f} seconds")
-        android_home_screen_pixel_color = get_pixel_color(screenshot_path, *android_home_screen_bottom_right["coord"])
-        battle_button_pixel_color = get_pixel_color(screenshot_path, *battle_button["coord"])
-        menu_button_pixel_color = get_pixel_color(screenshot_path, *menu_button["coord"])
-        captcha_diamond_pixel_color = get_pixel_color(screenshot_path, *captcha_diamond["coord"])
-
-        # ----- Autobattle OFF sequence handling (always run early) -----
-        if PENDING_AUTOBATTLE_EXIT:
-            # Step 1: perform swipe out of power saving if not yet done
-            if not AUTOBATTLE_EXIT_SWIPED:
-                try:
-                    x1, y1 = power_saving_screen_exit_swipe_left["coord"]
-                    x2, y2 = power_saving_screen_exit_swipe_right["coord"]
-                    adb_swipe(x1, y1, x2, y2, duration_ms=random.uniform(420, 560))
-                    AUTOBATTLE_EXIT_SWIPED = True
-                    AUTOBATTLE_EXIT_SWIPED_TS = time.time()
-                    emit_status("config", autobattle=False, exit_swipe=True)
-                    time.sleep(0.4)
-                    continue
-                except Exception:
-                    # Abort if swipe fails repeatedly
-                    PENDING_AUTOBATTLE_EXIT = False
-                    AUTOBATTLE_EXIT_SWIPED = False
-                    AUTOBATTLE_EXIT_REQUEST_TS = 0
-                    AUTOBATTLE_EXIT_SWIPED_TS = 0
-                    emit_status("config", autobattle=False, exit_abort_swipe=True)
-            else:
-                # Step 2: attempt exit taps when battle screen detected OR after timeout regardless
-                swiped_age = time.time() - AUTOBATTLE_EXIT_SWIPED_TS if AUTOBATTLE_EXIT_SWIPED_TS else 0
-                battle_screen_visible = get_pixel_color(screenshot_path, *battle_button["coord"]) == tuple(battle_button["color"])
-                if battle_screen_visible or swiped_age > 5:  # fallback after 5s
-                    try:
-                        adb_tap_fast(*with_offset(tuple(wave_exit_button_1["coord"])) )
-                        sleep_quick()
-                        adb_tap_fast(*with_offset(tuple(wave_exit_button_2["coord"])) )
-                        sleep_quick()
-                        PENDING_AUTOBATTLE_EXIT = False
-                        AUTOBATTLE_EXIT_SWIPED = False
-                        AUTOBATTLE_EXIT_REQUEST_TS = 0
-                        AUTOBATTLE_EXIT_SWIPED_TS = 0
-                        emit_status("config", autobattle=False, autobattle_exit_complete=True)
-                        time.sleep(0.4)
-                        continue
-                    except Exception:
-                        PENDING_AUTOBATTLE_EXIT = False
-                        AUTOBATTLE_EXIT_SWIPED = False
-                        AUTOBATTLE_EXIT_REQUEST_TS = 0
-                        AUTOBATTLE_EXIT_SWIPED_TS = 0
-                        emit_status("config", autobattle=False, exit_abort_taps=True)
-
-        if android_home_screen_pixel_color == tuple(android_home_screen_bottom_right["color"]):
-            emit_status("home", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-            adb_tap_fast(*tuple(android_home_screen_growcastle_icon["coord"]))
-        elif captcha_diamond_pixel_color == tuple(captcha_diamond["color"]):
-            if no_solve_captcha:
-                emit_status("captcha_wait", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-                time.sleep(1)
-                continue
-            
-            if captcha_attempt > 0:
-                # Create failure indicator file
-                with open(os.path.join(folder_name, "!failed"), "w") as f:
-                    f.write(f"Captcha solving failed at attempt {captcha_attempt}\n")
-                    f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                CURRENT_CAPTCHA_FOLDER = None  # Reset since the last attempt failed
-
-            captcha_attempt += 1
-            if captcha_attempt > captcha_retry_attempts:
-                print(f"Captcha solving failed after {captcha_retry_attempts} attempts. Exiting.")
-                emit_status("captcha_failed", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-                exit(1)
-            print(f"Solving captcha (attempt {captcha_attempt})")
-            emit_status("captcha_solving", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-            
-            # Create folder for screenshots
-            folder_name = f"captcha_screenshots/{datetime.now().strftime('%Y%m%d_%H%M%S')}_attempt{captcha_attempt}"
-            CURRENT_CAPTCHA_FOLDER = folder_name  # Store for later success marking
-            os.makedirs(folder_name, exist_ok=True)
-
-            # Click the captcha start button to initiate the captcha
-            adb_tap_fast(*with_offset(tuple(captcha_start_button["coord"])))
-
-            # Start screen recording
-            video_path = f"{folder_name}/captcha_recording.mp4"
-            recording_process = subprocess.Popen(
-                ["adb", "-s", ADB_DEVICE, "shell", "screenrecord", "--time-limit", "5", "/sdcard/captcha_recording.mp4"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            
-            # Wait for recording to complete
-            recording_process.wait()
-            
-            # Pull the video file
-            subprocess.run(["adb", "-s", ADB_DEVICE, "pull", "/sdcard/captcha_recording.mp4", video_path])
-            subprocess.run(["adb", "-s", ADB_DEVICE, "shell", "rm", "/sdcard/captcha_recording.mp4"])
-            
-            extraction_fps = 20
-            import cv2
-            cap = cv2.VideoCapture(video_path)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_interval = max(1, int(fps / extraction_fps))  # Extract every nth frame to get ~extraction_fps fps
-            
-            screenshot_count = 0
-            frame_num = 0
-            # Use the configured captcha region for cropping
-            x1, y1 = captcha_region["upper_left"]
-            x2, y2 = captcha_region["bottom_right"]
-            region = (x1, y1, x2 - x1, y2 - y1)
-            
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                if frame_num % frame_interval == 0:
-                    # Convert BGR to RGB and create PIL image
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    img = Image.fromarray(frame_rgb)
-                    
-                    # Crop to region of interest
-                    region_img = img.crop((region[0], region[1], region[0]+region[2], region[1]+region[3]))
-                    region_img.save(f"{folder_name}/screenshot_{screenshot_count:03d}.png")
-                    screenshot_count += 1
-                    
-                frame_num += 1
-            
-            cap.release()
-            os.remove(video_path)  # Clean up video file
-
-            log_index = captcha_solver.solve_captcha(folder_name, screenshot_count)
-            if log_index is None:
-                print("Captcha solver failed. Exiting.")
-                # Create failure indicator file
-                with open(os.path.join(folder_name, "!failed"), "w") as f:
-                    f.write(f"Captcha solving failed at attempt {captcha_attempt}\n")
-                    f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                CURRENT_CAPTCHA_FOLDER = None  # Reset since this attempt failed
-                exit(1)
-            else:
-                print(f"Fastest moving log identified as number {log_index} clockwise")
-
-            target = captcha_logs[log_index]
-            click_pos = with_offset(tuple(target))
-            adb_tap(*click_pos)
-            time.sleep(random.uniform(1, 2))
-            sleep_quick()
-
+        
+        screen_state = get_screen_state(screenshot_path, config)
+        game_state = {
+            'wave': n_wave,
+            'captcha_attempts': captcha_attempt,
+            'no_battle_count': no_battle_count
+        }
+        
+        # Route to appropriate handler based on screen state
+        if screen_state['android_home']:
+            handle_home_screen(config, game_state)
+        elif screen_state['captcha']:
+            captcha_attempt = handle_captcha(config, game_state, no_solve_captcha, captcha_retry_attempts)
             no_battle_count = 0
-            emit_status("captcha_clicked", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count, log_index=log_index)
-        elif battle_button_pixel_color == tuple(battle_button["color"]):
-            if captcha_attempt > 0:
-                captcha_attempt = 0
-                print("Captcha solved")
-                emit_status("captcha_solved", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-                
-                # Mark the current captcha folder as successful
-                if CURRENT_CAPTCHA_FOLDER and os.path.exists(CURRENT_CAPTCHA_FOLDER):
-                    with open(os.path.join(CURRENT_CAPTCHA_FOLDER, "!succeeded"), "w") as f:
-                        f.write("Captcha solving succeeded\n")
-                        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                        f.write(f"Wave: {n_wave}\n")
-                    CURRENT_CAPTCHA_FOLDER = None  # Reset after marking success
-
-            # Battle mode: use abilities
-            if abilities:
-                target = random.choice(abilities)
-                click_pos = with_offset(tuple(target))
-                #print(f"DEBUG: Using ability at {click_pos}")
-                adb_tap_fast(*click_pos)
-                sleep_quick()
-
+        elif screen_state['battle']:
+            captcha_attempt = handle_battle_mode(config, game_state)
             no_battle_count = 0
-            if is_boss_present():
-                emit_status("boss", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-            else:
-                emit_status("battle", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-
-        elif menu_button_pixel_color == tuple(menu_button["color"]):
-            if won:
-                print("VICTORY")
-                try:
-                    emit_status("wave_end", wave=n_wave, outcome="W")
-                except Exception:
-                    pass
-            else:
-                print("DEFEAT")
-                try:
-                    emit_status("wave_end", wave=n_wave, outcome="L")
-                except Exception:
-                    pass
-            won = False
-
-            time.sleep(min(60, random.expovariate(0.5)))
-
-            if not NO_UPGRADES_ACTIVE:
-                upgrade_type = random.choice(["one_click", "menu"])
-                if upgrade_type == "one_click" and one_click_upgrades:
-                    target = random.choice(one_click_upgrades)
-                    click_pos = with_offset(tuple(target))
-                    adb_tap_fast(*click_pos)
-                    sleep_quick()
-                    adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    sleep_quick()
-                elif upgrade_type == "menu" and menu_upgrades:
-                    target = random.choice(menu_upgrades)
-                    click_pos = with_offset(tuple(target))
-                    adb_tap_fast(*click_pos)
-                    sleep_quick()
-                    adb_swipe(click_pos[0], click_pos[1], click_pos[0], click_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    sleep_quick()
-
-                    hero_pos = with_offset(tuple(hero_upgrade_button["coord"]))
-                    adb_swipe(hero_pos[0], hero_pos[1], hero_pos[0], hero_pos[1], duration_ms=int(random.uniform(3000, 4500)))
-                    sleep_quick()
-                    adb_tap_fast(*with_offset(tuple(hero_window_close1["coord"])))
-                    sleep_quick()
-                    adb_tap_fast(*with_offset(tuple(hero_window_close2["coord"])))
-                    sleep_quick()
-
-            switch_pos = with_offset(tuple(battle_switch))
-            adb_tap_fast(*switch_pos)
-            time.sleep(random.uniform(0.5, 1))
-
-            # Wave start sequence: standard or autobattle (skip if exit is pending)
-            if AUTO_BATTLE_ENABLED and not PENDING_AUTOBATTLE_EXIT:
-                adb_tap_fast(*with_offset(tuple(autobattle_button["coord"])) )
-                sleep_quick()
-                adb_tap_fast(*with_offset(tuple(mode_toggle_button["coord"])) )
-                sleep_quick()
-                adb_tap_fast(*with_offset(tuple(autobattle_start_button["coord"])) )
-                sleep_quick()
-                adb_tap_fast(*with_offset(tuple(power_saving_button["coord"])) )
-                sleep_quick()
-            else:
-                adb_tap_fast(*with_offset(tuple(close_popup["coord"])) )
-                sleep_quick()
-                adb_tap_fast(*with_offset(tuple(military_band_f["coord"])) )
-                sleep_quick()
-
-            n_wave = n_wave + 1
-            print("Wave " + str(n_wave) + " started")
+        elif screen_state['menu']:
+            n_wave, won = handle_menu_mode(config, game_state, won)
+            captcha_attempt = game_state['captcha_attempts']  # Preserve captcha attempts
             no_battle_count = 0
-            emit_status("menu", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
         else:
-            win_panel_pixel_color = get_pixel_color(screenshot_path, *win_panel["coord"])
-            if win_panel_pixel_color == tuple(win_panel["color"]):
+            # Check for win condition and handle idle state
+            if screen_state['win_panel']:
                 won = True
-            
-            no_battle_count += 1
-            print(f"No battle mode detected, waiting... (count: {no_battle_count})")
-            emit_status("idle", wave=n_wave, captcha_attempts=captcha_attempt, no_battle=no_battle_count)
-            
-            if no_battle_count >= 5:
-                if no_battle_count%2 == 0:
-                    print(f"No battle mode detected {no_battle_count} times, attempting to close hero windows...")
-                    adb_tap_fast(*with_offset(tuple(hero_window_close1["coord"])))
-                    sleep_quick()
-                    adb_tap_fast(*with_offset(tuple(hero_window_close2["coord"])))
-                    sleep_quick()
-                else:
-                    print(f"No battle mode detected {no_battle_count} times, attempting to close golden horn window...")
-                    adb_tap_fast(*with_offset(tuple(golden_horn_close["coord"])))
-                    sleep_quick()
-
-            time.sleep(1)
+            no_battle_count = handle_idle_state(config, game_state)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Grow Castle automation bot')
