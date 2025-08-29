@@ -27,6 +27,11 @@ AUTOBATTLE_EXIT_SWIPED = False
 AUTOBATTLE_EXIT_REQUEST_TS = 0
 AUTOBATTLE_EXIT_SWIPED_TS = 0
 CURRENT_CAPTCHA_FOLDER = None
+COLONY_MODE = False  # New global flag for colony mode
+COLONY_BATTLE_IN_PROGRESS = False
+CLICKED_COLONY_AREAS = []  # Track clicked colony positions
+DIRECTION = "left"  # Colony swipe direction
+SWIPE_COUNT = 0  # Colony swipe counter
 
 # --- Status and Control Functions ---
 def emit_status(state, **kwargs):
@@ -240,6 +245,14 @@ def setup_config(add_mode=False):
         {"name": "power_saving_screen_exit_swipe_right", "desc": "RIGHT point for swipe to exit power saving screen (autobattle off) - rather go too far right than left, it will still work"},
         {"name": "wave_exit_button_1", "desc": "First wave exit confirmation button (after leaving power saving)"},
         {"name": "wave_exit_button_2", "desc": "Second wave exit confirmation button"},
+        {"name": "colonies_button", "desc": "Colonies button in main menu (for colony mode)"},
+        {"name": "colony_shield", "desc": "Colony shield pixel color to detect available colonies"},
+        {"name": "colony_battle", "desc": "Colony battle button to start colony battle"},
+        {"name": "colony_battle_gold_coin_top_left", "desc": "Gold coin in top left during colony battle (battle detection)"},
+        {"name": "after_colony_popup_1", "desc": "First popup after colony battle (close button)"},
+        {"name": "after_colony_popup_2", "desc": "Second popup after colony battle (close button)"},
+        {"name": "colony_upgrade_button", "desc": "Colony upgrade button (click to upgrade colony)"},
+        {"name": "just_below_colony_world_change_buttons", "desc": "Just below colony world change buttons (to distinguish them from unconquered colonies)"},
     ]
 
     dynamic_points = [
@@ -348,6 +361,13 @@ def is_boss_present():
     pixel_color = get_pixel_color(screenshot_path, x, y)
     return pixel_color == expected_color
 
+def is_area_already_clicked(x, y, clicked_areas, exclusion_radius=10):
+    """Check if a coordinate is within the exclusion radius of any previously clicked area."""
+    for clicked_x, clicked_y in clicked_areas:
+        if abs(x - clicked_x) <= exclusion_radius and abs(y - clicked_y) <= exclusion_radius:
+            return True
+    return False
+
 # --- Screen State Detection Functions ---
 def get_screen_state(screenshot_path, config):
     """Detect current screen state and return relevant information."""
@@ -357,12 +377,27 @@ def get_screen_state(screenshot_path, config):
     captcha_diamond_pixel = get_pixel_color(screenshot_path, *config["captcha_diamond"]["coord"])
     win_panel_pixel = get_pixel_color(screenshot_path, *config["win_panel"]["coord"])
     
+    # Colony mode specific detections
+    colony_states = {}
+    if COLONY_MODE:
+        colony_battle_pixel = get_pixel_color(screenshot_path, *config["colony_battle_gold_coin_top_left"]["coord"])
+        colony_states['colony_battle_active'] = colony_battle_pixel == tuple(config["colony_battle_gold_coin_top_left"]["color"])
+        
+        popup1_pixel = get_pixel_color(screenshot_path, *config["after_colony_popup_1"]["coord"])
+        colony_states['after_colony_popup_1'] = popup1_pixel == tuple(config["after_colony_popup_1"]["color"])
+        
+        popup2_pixel = get_pixel_color(screenshot_path, *config["after_colony_popup_2"]["coord"])
+        colony_states['after_colony_popup_2'] = popup2_pixel == tuple(config["after_colony_popup_2"]["color"])
+
+        colony_states['captcha'] = captcha_diamond_pixel == tuple(config["captcha_diamond"]["color"])
+    
     return {
         'android_home': android_home_pixel == tuple(config["android_home_screen_bottom_right"]["color"]),
         'battle': battle_button_pixel == tuple(config["battle_button"]["color"]),
         'menu': menu_button_pixel == tuple(config["menu_button"]["color"]),
         'captcha': captcha_diamond_pixel == tuple(config["captcha_diamond"]["color"]),
-        'win_panel': win_panel_pixel == tuple(config["win_panel"]["color"])
+        'win_panel': win_panel_pixel == tuple(config["win_panel"]["color"]),
+        **colony_states
     }
 
 # --- Autobattle Exit Handler ---
@@ -675,15 +710,167 @@ def start_new_wave(config):
         adb_tap_fast(*with_offset(tuple(config["military_band_f"]["coord"])))
         sleep_quick()
 
-# --- Main Function ---
-def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
-    """Main bot loop with clean state handling."""
-    global NO_UPGRADES_ACTIVE
+def color_matches(color1, color2, tolerance=10):
+    """Check if two RGB colors match within a given tolerance."""
+    return all(abs(c1 - c2) <= tolerance for c1, c2 in zip(color1, color2))
+
+# --- Colony Mode Handler ---
+def handle_colony_mode(config, game_state, screenshot_path) -> bool:
+    """Handle colony mode operations."""
+    global CLICKED_COLONY_AREAS, COLONY_BATTLE_IN_PROGRESS, DIRECTION, SWIPE_COUNT
     
-    # Initialize runtime flag
+    screen_state = get_screen_state(screenshot_path, config)
+    
+    # Check if we're back in menu mode - if so, exit colony mode and reset clicked areas
+    if screen_state['menu']:
+        print("Returned to menu, exiting colony mode")
+        CLICKED_COLONY_AREAS = []  # Reset for next colony mode session
+        emit_status("colony_complete", **game_state)
+        return False  # Signal to exit colony mode
+    
+    if screen_state['captcha']:
+        print("Captcha detected during colony mode, handling captcha...")
+        emit_status("colony_captcha", **game_state)
+        handle_captcha(config, game_state, no_solve_captcha=False, captcha_retry_attempts=2)
+        return True
+    
+    # Handle post-colony popups first
+    
+    if screen_state.get('after_colony_popup_1'):
+        print("Closing first after-colony popup")
+        adb_tap_fast(*with_offset(tuple(config["after_colony_popup_1"]["coord"])))
+        sleep_quick()
+        emit_status("colony_popup_1_closed", **game_state)
+        time.sleep(2)
+        return True
+
+    if screen_state.get('after_colony_popup_2'):
+        print("Upgrading colony")
+        for _ in range(13):
+            adb_tap_fast(*with_offset(tuple(config["colony_upgrade_button"]["coord"])))
+            sleep_quick()
+        
+        # If this was infinite colony, immediately continue to get back to battle mode
+        adb_screenshot(screenshot_path)
+        screen_state = get_screen_state(screenshot_path, config)
+        if screen_state.get('colony_battle_active'):
+            print("Battle started...")
+            emit_status("colony_infinite_continue", **game_state)
+        
+        else:
+            print("Closing second after-colony popup")
+            adb_tap_fast(*with_offset(tuple(config["after_colony_popup_2"]["coord"])))
+            time.sleep(5)
+            sleep_quick()
+            emit_status("colony_popup_2_closed", **game_state)
+        return True
+    
+    # Check if we're in colony battle
+    if screen_state.get('colony_battle_active'):
+        print("Colony battle in progress...")
+        emit_status("colony_battle", **game_state)
+        COLONY_BATTLE_IN_PROGRESS = True
+        
+        # Use abilities during colony battle
+        abilities = config.get("abilities", [])
+        if abilities:
+            target = random.choice(abilities)
+            click_pos = with_offset(tuple(target))
+            adb_tap_fast(*click_pos)
+            sleep_quick()
+        
+        return True
+    elif COLONY_BATTLE_IN_PROGRESS:
+        COLONY_BATTLE_IN_PROGRESS = False
+        time.sleep(5)  # Delay to allow post-battle screen to load
+        return True
+
+    # Look for available colonies and start battle
+    print("Looking for available colonies...")
+    emit_status("colony_searching", **game_state)
+
+    # Take a new screenshot to look for colony shields
+    adb_screenshot(screenshot_path)
+
+    # Look for colony shield color with tolerance
+    colony_shield_color = tuple(config["colony_shield"]["color"])
+    print(f"Looking for colony shield color: {colony_shield_color}")
+    print(f"Previously clicked areas: {CLICKED_COLONY_AREAS}")
+
+    img = Image.open(screenshot_path).convert("RGB")
+    width, height = img.size
+
+    # Search for the first pixel matching colony shield color with tolerance, excluding clicked areas
+    for y in range(config["just_below_colony_world_change_buttons"]["coord"][1], height):
+        for x in range(width):
+            # Skip if this area was already clicked
+            if is_area_already_clicked(x, y, CLICKED_COLONY_AREAS):
+                continue
+                
+            pixel_color = img.getpixel((x, y))
+            if color_matches(pixel_color, colony_shield_color, tolerance=15):
+                print(f"Found colony shield at ({x}, {y}) with color {pixel_color}")
+                emit_status("colony_found", x=x, y=y, **game_state)
+                
+                # Add this position to clicked areas before clicking
+                CLICKED_COLONY_AREAS.append((x, y))
+                print(f"Added ({x}, {y}) to clicked areas. Total clicked: {len(CLICKED_COLONY_AREAS)}")
+                
+                # Click on the colony
+                adb_tap_fast(x, y)  # No offset for accuracy
+                sleep_quick()
+                
+                # Click colony battle button
+                adb_tap_fast(*with_offset(tuple(config["colony_battle"]["coord"])))
+                sleep_quick()
+                time.sleep(2)
+                
+                emit_status("colony_battle_started", **game_state)
+                return True
+    
+    # No new colonies found
+    print(f"No new available colonies found. Already tried {len(CLICKED_COLONY_AREAS)} colonies.")
+    emit_status("colony_none_available", tried_count=len(CLICKED_COLONY_AREAS), **game_state)
+
+    if SWIPE_COUNT > 5:
+        # Swipe up
+        print("Swiping up to look for more colonies...")
+        duration_ms = random.uniform(1000, 1200)
+        adb_swipe(500, 212, 500, 471, duration_ms)
+        sleep_quick()
+        SWIPE_COUNT = 0
+        if DIRECTION == "left":
+            DIRECTION = "right"
+        else:
+            DIRECTION = "left"
+    else:
+        # Swipe in direction
+        print(f"Swiping {DIRECTION} to look for more colonies...")
+        duration_ms = random.uniform(1000, 1200)
+        if DIRECTION == "left":
+            adb_swipe(269, 250, 671, 250, duration_ms)
+        else:
+            adb_swipe(671, 250, 269, 250, duration_ms)
+        sleep_quick()
+        SWIPE_COUNT += 1
+    CLICKED_COLONY_AREAS = []
+    time.sleep(3)
+    return True
+
+# --- Main Function ---
+def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=2, colony=False):
+    """Main bot loop with clean state handling."""
+    global NO_UPGRADES_ACTIVE, COLONY_MODE
+    
+    # Initialize runtime flags
     if NO_UPGRADES_ACTIVE is None:
         NO_UPGRADES_ACTIVE = bool(no_upgrades)
         emit_status("config", no_upgrades=NO_UPGRADES_ACTIVE)
+    
+    COLONY_MODE = bool(colony)
+    if COLONY_MODE:
+        print("Colony mode enabled")
+        emit_status("config", colony_mode=True)
     
     config = load_config()
     safe_device = "".join(c for c in ADB_DEVICE if c.isalnum() or c in ('-', '_'))
@@ -720,6 +907,12 @@ def main(no_upgrades=False, no_solve_captcha=False, captcha_retry_attempts=3):
             'no_battle_count': no_battle_count
         }
         
+        # Colony mode handling
+        if COLONY_MODE:
+            if not handle_colony_mode(config, game_state, screenshot_path):
+                break
+            continue
+        
         # Route to appropriate handler based on screen state
         if screen_state['android_home']:
             handle_home_screen(config, game_state)
@@ -751,6 +944,8 @@ if __name__ == "__main__":
                        help='Run interactive setup to create/update config file')
     parser.add_argument('--setup-add', action='store_true',
                        help='Add new points to menu_upgrades and abilities')
+    parser.add_argument('--colony', action='store_true',
+                       help='Run in colony mode - automatically battle colonies')
     parser.add_argument('--adb-device', type=str, default='127.0.0.1:5555',
                        help='ADB device serial (default: 127.0.0.1:5555)')
     parser.add_argument('--config', type=str, default='config.json',
@@ -808,7 +1003,7 @@ if __name__ == "__main__":
         setup_config(add_mode=True)
 
     try:
-        main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha, captcha_retry_attempts=args.captcha_retry_attempts)
+        main(no_upgrades=args.no_upgrades, no_solve_captcha=args.no_solve_captcha, captcha_retry_attempts=args.captcha_retry_attempts, colony=args.colony)
     except KeyboardInterrupt:
         emit_status("stopped")
         raise
