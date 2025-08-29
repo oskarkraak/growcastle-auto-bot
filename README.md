@@ -5,6 +5,14 @@ Usage:
 1. Navigate to project root
 1. Run `python growcastle.py` (or `python growcastle.py --no-upgrades` if you don't want the bot to buy upgrades automatically)
 
+## Colony mode
+
+1. Open the colony window
+1. Select the world you want to automatically colonize
+1. Go to the bottom right of the world
+	- If you are doing infinite colony, this isn't needed. Instead, click the colony once to select it for the bot.
+1. Run `python growcastle.py --colony`.
+
 ## Live dashboard (TUI)
 
 A live terminal dashboard is available to monitor and orchestrate multiple instances (like htop). It renders a table of instances with live state updates.
